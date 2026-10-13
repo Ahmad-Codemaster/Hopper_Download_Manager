@@ -11,6 +11,7 @@ url = { workspace = true, features = ["serde"] }
 rusqlite.workspace = true
 reqwest.workspace = true
 uuid.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

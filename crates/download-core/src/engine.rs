@@ -7,6 +7,7 @@ use std::io::copy;
 use std::path::PathBuf;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -18,6 +19,53 @@ pub struct TransferEngine {
     destination_root: PathBuf,
     client: Client,
     operational_sources: Mutex<HashMap<JobId, String>>,
+}
+
+pub struct Engine {
+    inner: Arc<Mutex<Option<TransferEngine>>>,
+    destination_root: PathBuf,
+}
+
+impl Engine {
+    pub fn new(destination_root: PathBuf) -> Result<Self, EngineError> {
+        Ok(Self {
+            inner: Arc::new(Mutex::new(None)),
+            destination_root,
+        })
+    }
+
+    pub async fn create_job(&self, spec: JobSpec) -> Result<JobId, EngineError> {
+        let inner = Arc::clone(&self.inner);
+        let destination_root = self.destination_root.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = inner.lock()
+                .map_err(|_| EngineError::InvalidJob("engine lock poisoned".into()))?;
+            if guard.is_none() {
+                *guard = Some(TransferEngine::new(EngineConfig { destination_root })?);
+            }
+            guard.as_ref().expect("engine initialized").create_job(spec)
+        }).await.map_err(|error| EngineError::InvalidJob(error.to_string()))?
+    }
+
+    pub async fn start_job(&self, id: JobId) -> Result<(), EngineError> {
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            inner.lock()
+                .map_err(|_| EngineError::InvalidJob("engine lock poisoned".into()))?
+                .as_ref()
+                .ok_or_else(|| EngineError::InvalidJob("job engine not initialized".into()))?
+                .start_job(id)
+        }).await.map_err(|error| EngineError::InvalidJob(error.to_string()))?
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        let inner = Arc::clone(&self.inner);
+        if Arc::strong_count(&inner) == 2 {
+            std::thread::spawn(move || drop(inner));
+        }
+    }
 }
 
 impl TransferEngine {
