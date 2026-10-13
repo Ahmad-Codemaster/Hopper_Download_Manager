@@ -3,7 +3,7 @@
   "productName": "Hopper Download Manager",
   "version": "0.1.0",
   "identifier": "com.hopper.downloadmanager",
-  "build": { "frontendDist": "../ui/dist", "devUrl": "http://localhost:1420" },
+  "build": { "beforeDevCommand": "npm --prefix ../ui run dev -- --host 127.0.0.1", "beforeBuildCommand": "npm --prefix ../ui run bundle", "frontendDist": "../ui/dist", "devUrl": "http://localhost:1420" },
   "app": { "windows": [{ "title": "Hopper Download Manager", "width": 1100, "height": 720, "resizable": true }] },
   "bundle": { "active": false, "icon": ["icons/icon.png"] }
 }

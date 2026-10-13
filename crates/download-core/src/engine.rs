@@ -83,6 +83,10 @@ impl Engine {
         self.set_state(id, JobState::Canceled).await
     }
 
+    pub async fn retry_job(&self, id: JobId) -> Result<(), EngineError> {
+        self.set_state(id, JobState::Queued).await
+    }
+
     async fn set_state(&self, id: JobId, state: JobState) -> Result<(), EngineError> {
         let inner = Arc::clone(&self.inner);
         let destination_root = self.destination_root.clone();
@@ -138,7 +142,6 @@ impl TransferEngine {
     }
 
     pub fn start_job(&self, id: JobId) -> Result<(), EngineError> {
-        self.store.set_state(id.clone(), JobState::Active)?;
         let job = self.store.get_job(id.clone())?;
         let source = self
             .operational_sources
@@ -147,6 +150,7 @@ impl TransferEngine {
             .get(&id)
             .cloned()
             .ok_or_else(|| EngineError::InvalidJob("reauthorization required after restart".into()))?;
+        self.store.set_state(id.clone(), JobState::Active)?;
         let temporary = self.destination_root.join(format!(".{}.part", id.0));
         let mut final_path = self.destination_root.join(job.destination);
         if final_path.exists() && matches!(job.conflict_policy, crate::model::ConflictPolicy::Rename) {
@@ -172,7 +176,7 @@ impl TransferEngine {
                 .client
                 .get(source)
                 .send()
-                .map_err(|error| EngineError::InvalidJob(error.to_string()))?;
+                .map_err(|_| EngineError::InvalidJob("download request failed".into()))?;
             if !response.status().is_success() {
                 return Err(EngineError::InvalidJob(format!("HTTP {}", response.status())));
             }

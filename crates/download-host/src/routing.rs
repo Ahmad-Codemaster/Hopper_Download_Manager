@@ -27,6 +27,7 @@ pub async fn route(engine: &Engine, envelope: CommandEnvelope) -> ResponseEnvelo
         Command::Pause { job_id } => engine.pause_job(download_core::model::JobId(job_id)).await.map(|_| serde_json::Value::Null).map_err(|error| error.to_string()),
         Command::Resume { job_id } => engine.resume_job(download_core::model::JobId(job_id)).await.map(|_| serde_json::Value::Null).map_err(|error| error.to_string()),
         Command::Cancel { job_id } => engine.cancel_job(download_core::model::JobId(job_id)).await.map(|_| serde_json::Value::Null).map_err(|error| error.to_string()),
+        Command::Retry { job_id } => engine.retry_job(download_core::model::JobId(job_id)).await.map(|_| serde_json::Value::Null).map_err(|error| error.to_string()),
     };
     match result {
         Ok(payload) => ResponseEnvelope::success(payload),

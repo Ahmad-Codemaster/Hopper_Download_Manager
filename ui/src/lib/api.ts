@@ -17,6 +17,6 @@ export async function createAndStart(source: string, destination: string): Promi
   return id;
 }
 
-export async function controlJob(command: "pause_job" | "resume_job" | "cancel_job", jobId: string): Promise<void> {
+export async function controlJob(command: "pause_job" | "resume_job" | "cancel_job" | "retry_job", jobId: string): Promise<void> {
   await invoke(command, { jobId });
 }

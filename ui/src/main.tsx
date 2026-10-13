@@ -1,4 +1,4 @@
-import { StrictMode, useState } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { createAndStart, listJobs, type Job } from "./lib/api";
@@ -6,6 +6,9 @@ import { createAndStart, listJobs, type Job } from "./lib/api";
 function App() {
   const [url, setUrl] = useState("");
   const [jobs, setJobs] = useState<Job[]>([]);
+  useEffect(() => {
+    listJobs().then(setJobs).catch((error) => console.error("Could not load downloads", error));
+  }, []);
   const add = async () => {
     try {
       const parsed = new URL(url);

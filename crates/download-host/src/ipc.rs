@@ -10,6 +10,7 @@ pub enum Command {
     Pause { job_id: String },
     Resume { job_id: String },
     Cancel { job_id: String },
+    Retry { job_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
