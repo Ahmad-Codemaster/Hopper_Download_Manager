@@ -3,6 +3,18 @@ use serde::{Deserialize, Serialize};
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Command { List, Start { job_id: String }, Pause { job_id: String }, Cancel { job_id: String } }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandEnvelope { pub major: u16, pub minor: u16, pub command: Command }
+
+impl CommandEnvelope {
+    pub fn list() -> Self { Self { major: 1, minor: 0, command: Command::List } }
+    pub fn encode(&self) -> Result<Vec<u8>, serde_json::Error> { serde_json::to_vec(self) }
+    pub fn decode(data: &[u8]) -> Result<Self, serde_json::Error> { serde_json::from_slice(data) }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Envelope {
     pub major: u16,
     pub minor: u16,
