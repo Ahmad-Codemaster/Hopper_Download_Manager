@@ -116,6 +116,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "download-host"
+version = "0.1.0"
+dependencies = [
+ "download-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
