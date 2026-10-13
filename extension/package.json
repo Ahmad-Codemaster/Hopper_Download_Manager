@@ -1,0 +1,8 @@
+{
+  "name": "download-manager-extension",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test"
+  }
+}

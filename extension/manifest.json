@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Open Download Manager",
+  "version": "0.1.0",
+  "description": "Hands user-approved HTTP(S) downloads to the local download manager.",
+  "permissions": ["downloads", "nativeMessaging"],
+  "background": { "service_worker": "src/background.js" },
+  "action": { "default_title": "Send download to manager" }
+}
