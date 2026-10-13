@@ -35,14 +35,27 @@ impl JobStore {
     }
 
     pub fn create_job(&self, spec: &JobSpec) -> Result<JobId, EngineError> {
+        let source = redact_url(&spec.source);
+        let destination = spec.destination.to_string_lossy().to_string();
+        let duplicate: bool = self
+            .connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM jobs WHERE source = ?1 AND destination = ?2)",
+                params![source, destination],
+                |row| row.get(0),
+            )
+            .map_err(|error| EngineError::InvalidJob(error.to_string()))?;
+        if duplicate {
+            return Err(EngineError::InvalidJob("duplicate source and destination".into()));
+        }
         let id = JobId(format!("{:x}", self.connection.last_insert_rowid() + 1));
         self.connection
             .execute(
                 "INSERT INTO jobs (id, source, destination, state) VALUES (?1, ?2, ?3, ?4)",
                 params![
                     id.0,
-                    redact_url(&spec.source),
-                    spec.destination.to_string_lossy(),
+                    source,
+                    destination,
                     "queued"
                 ],
             )
