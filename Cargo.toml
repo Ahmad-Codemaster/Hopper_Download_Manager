@@ -1,0 +1,12 @@
+[workspace]
+members = ["crates/download-core"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+url = "2"
+thiserror = "1"
