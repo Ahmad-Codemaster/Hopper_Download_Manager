@@ -5,6 +5,8 @@ use reqwest::blocking::Client;
 use std::fs::{self, File};
 use std::io::copy;
 use std::path::PathBuf;
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -15,6 +17,7 @@ pub struct TransferEngine {
     store: JobStore,
     destination_root: PathBuf,
     client: Client,
+    operational_sources: Mutex<HashMap<JobId, String>>,
 }
 
 impl TransferEngine {
@@ -30,6 +33,7 @@ impl TransferEngine {
             store,
             destination_root: config.destination_root,
             client,
+            operational_sources: Mutex::new(HashMap::new()),
         })
     }
 
@@ -39,18 +43,48 @@ impl TransferEngine {
         if destination.exists() && matches!(spec.conflict_policy, crate::model::ConflictPolicy::Reject) {
             return Err(EngineError::DestinationExists);
         }
-        self.store.create_job(&spec)
+        let id = self.store.create_job(&spec)?;
+        self.operational_sources
+            .lock()
+            .map_err(|_| EngineError::InvalidJob("source lock poisoned".into()))?
+            .insert(id.clone(), spec.source.to_string());
+        Ok(id)
     }
 
     pub fn start_job(&self, id: JobId) -> Result<(), EngineError> {
         self.store.set_state(id.clone(), JobState::Active)?;
         let job = self.store.get_job(id.clone())?;
+        let source = self
+            .operational_sources
+            .lock()
+            .map_err(|_| EngineError::InvalidJob("source lock poisoned".into()))?
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| EngineError::InvalidJob("reauthorization required after restart".into()))?;
         let temporary = self.destination_root.join(format!(".{}.part", id.0));
-        let final_path = self.destination_root.join(job.destination);
+        let mut final_path = self.destination_root.join(job.destination);
+        if final_path.exists() && matches!(job.conflict_policy, crate::model::ConflictPolicy::Rename) {
+            let stem = final_path.file_stem().and_then(|value| value.to_str()).unwrap_or("download");
+            let extension = final_path.extension().and_then(|value| value.to_str()).unwrap_or("");
+            let mut index = 1;
+            loop {
+                let name = if extension.is_empty() {
+                    format!("{stem} ({index})")
+                } else {
+                    format!("{stem} ({index}).{extension}")
+                };
+                let candidate = final_path.with_file_name(name);
+                if !candidate.exists() {
+                    final_path = candidate;
+                    break;
+                }
+                index += 1;
+            }
+        }
         let result = (|| {
             let mut response = self
                 .client
-                .get(&job.source)
+                .get(source)
                 .send()
                 .map_err(|error| EngineError::InvalidJob(error.to_string()))?;
             if !response.status().is_success() {

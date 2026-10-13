@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { validateHandoff, redactUrl } = require('../src/protocol');
+const { shouldHandoff } = require('../src/background');
 
 test('accepts authorized HTTP handoff and redacts query values', () => {
   assert.equal(validateHandoff({ url: 'https://example.test/file?token=secret' }), true);
@@ -9,4 +10,9 @@ test('accepts authorized HTTP handoff and redacts query values', () => {
 
 test('rejects unsupported handoff schemes', () => {
   assert.equal(validateHandoff({ url: 'javascript:alert(1)' }), false);
+});
+
+test('requires explicit consent before handoff', () => {
+  assert.equal(shouldHandoff({ url: 'https://example.test/file' }), false);
+  assert.equal(shouldHandoff({ url: 'https://example.test/file' }, true), true);
 });

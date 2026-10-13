@@ -1,4 +1,4 @@
-use crate::model::{EngineError, JobId, JobSpec, JobState};
+use crate::model::{ConflictPolicy, EngineError, JobId, JobSpec, JobState};
 use crate::validation::redact_url;
 use rusqlite::{params, Connection};
 use std::path::Path;
@@ -10,6 +10,7 @@ pub struct StoredJob {
     pub destination: String,
     pub state: JobState,
     pub completed_bytes: u64,
+    pub conflict_policy: ConflictPolicy,
 }
 
 pub struct JobStore {
@@ -25,9 +26,11 @@ impl JobStore {
                 "CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY,
                     source TEXT NOT NULL,
+                    source_key TEXT NOT NULL,
                     destination TEXT NOT NULL,
                     state TEXT NOT NULL,
-                    completed_bytes INTEGER NOT NULL DEFAULT 0
+                    completed_bytes INTEGER NOT NULL DEFAULT 0,
+                    conflict_policy TEXT NOT NULL
                 );",
             )
             .map_err(|error| EngineError::InvalidJob(error.to_string()))?;
@@ -36,27 +39,39 @@ impl JobStore {
 
     pub fn create_job(&self, spec: &JobSpec) -> Result<JobId, EngineError> {
         let source = redact_url(&spec.source);
+        let source_key = format!("{:x}", {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            spec.source.as_str().hash(&mut hasher);
+            hasher.finish()
+        });
         let destination = spec.destination.to_string_lossy().to_string();
         let duplicate: bool = self
             .connection
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM jobs WHERE source = ?1 AND destination = ?2)",
-                params![source, destination],
+                "SELECT EXISTS(SELECT 1 FROM jobs WHERE source_key = ?1 AND destination = ?2)",
+                params![source_key, destination],
                 |row| row.get(0),
             )
             .map_err(|error| EngineError::InvalidJob(error.to_string()))?;
         if duplicate {
             return Err(EngineError::InvalidJob("duplicate source and destination".into()));
         }
-        let id = JobId(format!("{:x}", self.connection.last_insert_rowid() + 1));
+        let id = JobId(uuid::Uuid::new_v4().to_string());
+        let conflict_policy = match spec.conflict_policy {
+            ConflictPolicy::Reject => "reject",
+            ConflictPolicy::Rename => "rename",
+        };
         self.connection
             .execute(
-                "INSERT INTO jobs (id, source, destination, state) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO jobs (id, source, source_key, destination, state, conflict_policy) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     id.0,
                     source,
+                    source_key,
                     destination,
-                    "queued"
+                    "queued",
+                    conflict_policy
                 ],
             )
             .map_err(|error| EngineError::InvalidJob(error.to_string()))?;
@@ -76,10 +91,11 @@ impl JobStore {
     pub fn get_job(&self, id: JobId) -> Result<StoredJob, EngineError> {
         self.connection
             .query_row(
-                "SELECT id, source, destination, state, completed_bytes FROM jobs WHERE id = ?1",
+                "SELECT id, source, destination, state, completed_bytes, conflict_policy FROM jobs WHERE id = ?1",
                 params![id.0],
                 |row| {
                     let state: String = row.get(3)?;
+                    let conflict_policy: String = row.get(5)?;
                     Ok(StoredJob {
                         id: JobId(row.get(0)?),
                         source: row.get(1)?,
@@ -90,6 +106,11 @@ impl JobStore {
                             _ => JobState::Queued,
                         },
                         completed_bytes: row.get(4)?,
+                        conflict_policy: if conflict_policy == "rename" {
+                            ConflictPolicy::Rename
+                        } else {
+                            ConflictPolicy::Reject
+                        },
                     })
                 },
             )
