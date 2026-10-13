@@ -3,7 +3,7 @@ use crate::validation::redact_url;
 use rusqlite::{params, Connection};
 use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct StoredJob {
     pub id: JobId,
     pub source: String,

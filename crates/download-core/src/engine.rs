@@ -57,6 +57,44 @@ impl Engine {
                 .start_job(id)
         }).await.map_err(|error| EngineError::InvalidJob(error.to_string()))?
     }
+
+    pub async fn list_jobs(&self) -> Result<Vec<crate::store::StoredJob>, EngineError> {
+        let inner = Arc::clone(&self.inner);
+        let destination_root = self.destination_root.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = inner.lock()
+                .map_err(|_| EngineError::InvalidJob("engine lock poisoned".into()))?;
+            if guard.is_none() {
+                *guard = Some(TransferEngine::new(EngineConfig { destination_root })?);
+            }
+            guard.as_ref().expect("engine initialized").store.list_jobs()
+        }).await.map_err(|error| EngineError::InvalidJob(error.to_string()))?
+    }
+
+    pub async fn pause_job(&self, id: JobId) -> Result<(), EngineError> {
+        self.set_state(id, JobState::Paused).await
+    }
+
+    pub async fn resume_job(&self, id: JobId) -> Result<(), EngineError> {
+        self.set_state(id, JobState::Queued).await
+    }
+
+    pub async fn cancel_job(&self, id: JobId) -> Result<(), EngineError> {
+        self.set_state(id, JobState::Canceled).await
+    }
+
+    async fn set_state(&self, id: JobId, state: JobState) -> Result<(), EngineError> {
+        let inner = Arc::clone(&self.inner);
+        let destination_root = self.destination_root.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = inner.lock()
+                .map_err(|_| EngineError::InvalidJob("engine lock poisoned".into()))?;
+            if guard.is_none() {
+                *guard = Some(TransferEngine::new(EngineConfig { destination_root })?);
+            }
+            guard.as_ref().expect("engine initialized").store.set_state(id, state)
+        }).await.map_err(|error| EngineError::InvalidJob(error.to_string()))?
+    }
 }
 
 impl Drop for Engine {

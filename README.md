@@ -33,16 +33,27 @@ Pop-Location
 
 ## Desktop UI
 
-The UI is a Tauri-compatible React/TypeScript shell. From `ui/`, install the
-declared npm dependencies and run the project's Vite/Tauri development command
-when the desktop shell is configured:
+The desktop app is a Tauri 2 shell with a React/TypeScript frontend and the
+Rust engine running in-process. From `ui/`, install dependencies and create a
+production frontend bundle:
 
 ```powershell
 Push-Location ui
 npm install
-npm run build
+npm run bundle
 Pop-Location
 ```
+
+The Windows shell can then be checked or run from the repository root:
+
+```powershell
+cargo check -p hopper
+cargo tauri dev
+```
+
+The UI sends typed `create_job`, `start_job`, `list_jobs`, `pause_job`,
+`resume_job`, and `cancel_job` commands to the Rust engine. Download data and
+the SQLite database are stored under `%LOCALAPPDATA%\HopperDownloadManager`.
 
 ## Local Chrome setup
 

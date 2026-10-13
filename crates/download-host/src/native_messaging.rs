@@ -1,5 +1,8 @@
 use std::io::{self, Read, Write};
-use crate::ipc::{decode, encode, Envelope};
+use crate::ipc::{decode, encode, CommandEnvelope, Envelope};
+use crate::routing::route;
+use download_core::engine::Engine;
+use tokio::runtime::Runtime;
 
 pub fn read_message<R: Read>(reader: &mut R) -> io::Result<Vec<u8>> {
     let mut length = [0; 4];
@@ -33,6 +36,30 @@ pub fn process_stream<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> io::
             Err(error) => Envelope::new(&format!("error: {error}")),
         };
         let encoded = encode(&response)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        write_message(writer, &encoded)?;
+    }
+
+    Ok(())
+}
+
+pub fn process_engine_stream<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    engine: &Engine,
+    runtime: &Runtime,
+) -> io::Result<()> {
+    loop {
+        let data = match read_message(reader) {
+            Ok(data) => data,
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(error),
+        };
+        let response = match CommandEnvelope::decode(&data) {
+            Ok(command) => runtime.block_on(route(engine, command)),
+            Err(error) => crate::ipc::ResponseEnvelope::error(error.to_string()),
+        };
+        let encoded = serde_json::to_vec(&response)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         write_message(writer, &encoded)?;
     }

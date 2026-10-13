@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "build": "tsc --noEmit"
+    "build": "tsc --noEmit",
+    "dev": "vite",
+    "bundle": "vite build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
@@ -15,6 +17,7 @@
   "devDependencies": {
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0"
   }
 }

@@ -43,3 +43,22 @@ fn lists_jobs_and_reconciles_missing_completed_file() {
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].state, JobState::Failed);
 }
+
+#[tokio::test]
+async fn engine_lists_jobs_and_exposes_lifecycle_controls() {
+    let root = tempdir().unwrap();
+    let engine = download_core::engine::Engine::new(root.path().to_path_buf()).unwrap();
+    let id = engine.create_job(JobSpec {
+        source: Url::parse("http://127.0.0.1/file").unwrap(),
+        destination: "file.bin".into(),
+        request_context: RequestContext::default(),
+        conflict_policy: ConflictPolicy::Reject,
+    }).await.unwrap();
+
+    assert_eq!(engine.list_jobs().await.unwrap().len(), 1);
+    engine.pause_job(id.clone()).await.unwrap();
+    assert_eq!(engine.list_jobs().await.unwrap()[0].state, JobState::Paused);
+    engine.resume_job(id.clone()).await.unwrap();
+    engine.cancel_job(id).await.unwrap();
+    assert_eq!(engine.list_jobs().await.unwrap()[0].state, JobState::Canceled);
+}
