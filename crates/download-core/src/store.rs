@@ -15,11 +15,17 @@ pub struct StoredJob {
 
 pub struct JobStore {
     connection: Connection,
+    root: std::path::PathBuf,
 }
 
 impl JobStore {
     pub fn open(path: &Path) -> Result<Self, EngineError> {
-        let connection = Connection::open(path)
+        let database_path = if path.is_dir() {
+            path.join("jobs.db")
+        } else {
+            path.to_path_buf()
+        };
+        let connection = Connection::open(&database_path)
             .map_err(|error| EngineError::InvalidJob(error.to_string()))?;
         connection
             .execute_batch(
@@ -34,7 +40,8 @@ impl JobStore {
                 );",
             )
             .map_err(|error| EngineError::InvalidJob(error.to_string()))?;
-        Ok(Self { connection })
+        let root = database_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        Ok(Self { connection, root })
     }
 
     pub fn create_job(&self, spec: &JobSpec) -> Result<JobId, EngineError> {
@@ -115,6 +122,42 @@ impl JobStore {
                 },
             )
             .map_err(|error| EngineError::InvalidJob(error.to_string()))
+    }
+
+    pub fn list_jobs(&self) -> Result<Vec<StoredJob>, EngineError> {
+        let mut statement = self.connection
+            .prepare("SELECT id, source, destination, state, completed_bytes, conflict_policy FROM jobs ORDER BY id")
+            .map_err(|error| EngineError::InvalidJob(error.to_string()))?;
+        let rows = statement.query_map([], |row| {
+            let state: String = row.get(3)?;
+            let policy: String = row.get(5)?;
+            let destination: String = row.get(2)?;
+            let mut state = match state.as_str() {
+                    "completed" => JobState::Completed,
+                    "failed" => JobState::Failed,
+                    "active" => JobState::Active,
+                    "paused" => JobState::Paused,
+                    "canceled" => JobState::Canceled,
+                    _ => JobState::Queued,
+                };
+            if state == JobState::Completed && !self.root.join(&destination).exists() {
+                state = JobState::Failed;
+            }
+            Ok(StoredJob {
+                id: JobId(row.get(0)?),
+                source: row.get(1)?,
+                destination,
+                state,
+                completed_bytes: row.get(4)?,
+                conflict_policy: if policy == "rename" {
+                    ConflictPolicy::Rename
+                } else {
+                    ConflictPolicy::Reject
+                },
+            })
+        }).map_err(|error| EngineError::InvalidJob(error.to_string()))?;
+        rows.map(|row| row.map_err(|error| EngineError::InvalidJob(error.to_string())))
+            .collect()
     }
 
     pub fn set_state(&self, id: JobId, state: JobState) -> Result<(), EngineError> {
