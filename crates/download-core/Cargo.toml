@@ -9,6 +9,7 @@ serde.workspace = true
 thiserror.workspace = true
 url = { workspace = true, features = ["serde"] }
 rusqlite.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

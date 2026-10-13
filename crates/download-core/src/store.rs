@@ -82,4 +82,22 @@ impl JobStore {
             )
             .map_err(|error| EngineError::InvalidJob(error.to_string()))
     }
+
+    pub fn set_state(&self, id: JobId, state: JobState) -> Result<(), EngineError> {
+        let value = match state {
+            JobState::Active => "active",
+            JobState::Paused => "paused",
+            JobState::Failed => "failed",
+            JobState::Completed => "completed",
+            JobState::Canceled => "canceled",
+            JobState::Queued => "queued",
+        };
+        self.connection
+            .execute(
+                "UPDATE jobs SET state = ?1 WHERE id = ?2",
+                params![value, id.0],
+            )
+            .map_err(|error| EngineError::InvalidJob(error.to_string()))?;
+        Ok(())
+    }
 }
