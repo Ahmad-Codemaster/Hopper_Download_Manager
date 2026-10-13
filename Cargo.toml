@@ -10,3 +10,5 @@ license = "MIT"
 serde = { version = "1", features = ["derive"] }
 url = "2"
 thiserror = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tempfile = "3"

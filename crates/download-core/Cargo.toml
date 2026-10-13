@@ -8,3 +8,7 @@ license.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 url = { workspace = true, features = ["serde"] }
+rusqlite.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
