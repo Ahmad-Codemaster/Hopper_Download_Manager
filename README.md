@@ -1,4 +1,4 @@
-# Open Download Manager
+# Hopper Download Manager
 
 An original, open-source Windows download manager foundation with a Rust
 transfer core and Chrome Manifest V3 handoff. This project is not affiliated
@@ -14,9 +14,10 @@ The current milestone provides:
 - Content-Range validation primitives for future segmented transfers.
 - A versioned host message envelope and Chrome Native Messaging framing.
 - A minimal Chrome extension protocol layer.
+- An initial desktop UI in `ui/` for adding and viewing HTTP(S) downloads.
 
-Segment scheduling, restart reconciliation, polished desktop UI, scheduling,
-and broader browser/media support remain subsequent milestones.
+Segment scheduling, native UI wiring, scheduling, and broader browser/media
+support remain subsequent milestones.
 
 ## Build and test
 
@@ -27,6 +28,19 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 Push-Location extension
 node --test
+Pop-Location
+```
+
+## Desktop UI
+
+The UI is a Tauri-compatible React/TypeScript shell. From `ui/`, install the
+declared npm dependencies and run the project's Vite/Tauri development command
+when the desktop shell is configured:
+
+```powershell
+Push-Location ui
+npm install
+npm run build
 Pop-Location
 ```
 
