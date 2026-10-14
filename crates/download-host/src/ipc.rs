@@ -11,6 +11,7 @@ pub enum Command {
     Resume { job_id: String },
     Cancel { job_id: String },
     Retry { job_id: String },
+    RefreshSource { job_id: String, new_source: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

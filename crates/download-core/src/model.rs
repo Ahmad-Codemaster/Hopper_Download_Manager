@@ -51,6 +51,8 @@ pub struct JobEvent {
     pub state: JobState,
     pub completed_bytes: u64,
     pub total_bytes: Option<u64>,
+    #[serde(default)]
+    pub speed_bytes_per_sec: u64,
     pub retry_count: u32,
 }
 

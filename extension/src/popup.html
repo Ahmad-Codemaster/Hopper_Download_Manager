@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Hopper Download Manager</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <header class="popup-header">
+      <div class="brand">
+        <span class="brand-icon">⚡</span>
+        <div>
+          <h1 class="brand-title">Hopper</h1>
+          <span class="brand-sub">IDM Accelerator</span>
+        </div>
+      </div>
+      <div class="status-indicator" title="Native Engine Connected">
+        <span class="status-dot"></span> Active
+      </div>
+    </header>
+
+    <div class="settings-card">
+      <label class="toggle-container">
+        <input type="checkbox" id="auto-intercept-toggle" checked>
+        <span class="toggle-slider"></span>
+        <span class="toggle-label">Auto-intercept downloads</span>
+      </label>
+    </div>
+
+    <div class="media-section">
+      <div class="section-title-row">
+        <span class="section-title">Captured on this page</span>
+        <span class="media-count" id="media-count">0 found</span>
+      </div>
+
+      <div class="media-list" id="media-list">
+        <div class="empty-state" id="empty-state">
+          <span>🔍</span>
+          <p>No media or files detected on this page yet.</p>
+          <small>Start playing a video or click a download link.</small>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

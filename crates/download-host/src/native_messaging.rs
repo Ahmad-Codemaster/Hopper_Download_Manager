@@ -21,7 +21,8 @@ pub fn write_message<W: Write>(writer: &mut W, data: &[u8]) -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "message too large"));
     }
     writer.write_all(&(data.len() as u32).to_le_bytes())?;
-    writer.write_all(data)
+    writer.write_all(data)?;
+    writer.flush()
 }
 
 pub fn process_stream<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<()> {

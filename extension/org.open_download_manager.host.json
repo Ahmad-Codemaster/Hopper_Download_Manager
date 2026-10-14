@@ -1,0 +1,9 @@
+{
+  "name": "org.open_download_manager.host",
+  "description": "Hopper Download Manager Native Host",
+  "path": "C:\\Users\\ahmad\\AndroidStudioProjects\\IDM_project\\target\\release\\download-host.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://gaokhlidbpdojkakefeehfpknnnlgkel/"
+  ]
+}

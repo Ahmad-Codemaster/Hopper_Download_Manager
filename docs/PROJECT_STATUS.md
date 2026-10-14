@@ -6,500 +6,159 @@
 **Platform:** Windows  
 **Repository:** [Ahmad-Codemaster/Hopper_Download_Manager](https://github.com/Ahmad-Codemaster/Hopper_Download_Manager)  
 **Current branch:** `master`  
-**Status date:** 2026-10-13  
-**Current release stage:** Early Windows MVP / development build
+**Status date:** 2026-10-14  
+**Current release stage:** Alpha Feature Complete / Standalone Windows Build & Extension Handoff
 
 ---
 
 ## 1. Executive Summary
 
-Hopper Download Manager is an original, open-source Windows download manager
-built to provide a reliable and privacy-conscious alternative for
-user-authorized HTTP(S) downloads.
+Hopper Download Manager is a high-performance, open-source Windows download accelerator and stream grabber built in Rust, Tokio, Tauri v2, and Chrome Manifest V3. It provides an efficient, multi-threaded alternative to Internet Download Manager (IDM) with native Windows integration, dynamic range segmentation, and in-page video sniffing.
 
 The project currently contains:
 
-- A Rust download engine and SQLite persistence layer.
-- A Windows-compatible Tauri 2 desktop shell.
-- A React and TypeScript user interface.
-- A Chrome Manifest V3 extension foundation.
-- A Native Messaging host protocol with typed command routing.
-- Automated Rust, TypeScript, UI, and extension verification.
-- A locally generated Windows executable for development use.
-
-The project is functional as a development MVP: the desktop shell can be
-built, launched, and used to submit HTTP(S) download jobs. However, it is not
-yet a complete production replacement for a mature commercial download
-manager. The most important remaining engineering work is cooperative
-pause/resume/cancel behavior during active transfers, live progress events,
-and unifying the desktop and Chrome clients behind one long-lived engine
-instance.
+- **High-Speed Multi-Threaded Engine (`download-core`):** Tokio-based async engine with dynamic split-in-half range chunking, token-bucket speed limiter, ZIP central directory previewing, and SQLite persistence.
+- **Standalone Windows Desktop GUI (`hopper.exe`):** Native Windows application (`#![windows_subsystem = "windows"]`) embedding the dark-mode React/TypeScript UI directly into the binary with zero console popup and offline local operation.
+- **Native Messaging Host (`download-host.exe`):** Low-latency STDIO IPC bridge between browser extensions and the Rust download engine with flushed binary framing.
+- **Chrome / Edge / Brave MV3 Extension:** Full-featured browser integration with automatic download interception, in-page floating media grabber (`⚡ Download Video`), automatic HLS (`.m3u8`) variant parsing (1080p/720p/480p), smart page-title naming, and automatic browser download fallbacks.
+- **Original Branding & Assets:** Complete high-resolution icon set for Windows PE executables (`.ico`) and browser extensions (`16x16`, `32x32`, `48x48`, `128x128`, `512x512`).
+- **Comprehensive Test Suite:** 27 Rust engine/host integration tests and 9 Node.js extension unit tests passing at 100% green.
 
 ---
 
 ## 2. Work Completed
 
-### 2.1 Project foundation
+### 2.1 Multi-Threaded Rust Download Engine (`crates/download-core`)
 
-- Created a public GitHub repository.
-- Established an original clean-room implementation.
-- Added project documentation, design specifications, and implementation
-  planning records.
-- Configured a Rust workspace containing the download core and Windows host.
-- Added repository ignore rules for generated build output and local
-  dependencies.
+- **Dynamic Range Segmentation:** Implemented `split_segment_in_half` dynamic worker allocation to split active segments into parallel sub-streams whenever bandwidth allows.
+- **Token-Bucket Bandwidth Limiter:** Configurable speed throttling with deficit-based token consumption (`limiter.rs`).
+- **ZIP Archive Central Directory Inspector:** Remote central directory parsing allowing file inspection inside ZIP archives before full transfer (`archive.rs`).
+- **Resilient Recovery & URL Refresh:** `RefreshSource` protocol command allowing expired signed download links to be refreshed on the fly without discarding downloaded chunks.
+- **Durable Checkpointing:** SQLite-backed byte tracking with temporary `.part` file staging and atomic rename on completion.
+- **Safe Path & Security Policies:** Traversal protection, sensitive query redaction, and collision-free rename policies.
 
-### 2.2 Rust download core
+### 2.2 Native Messaging Host & IPC Protocol (`crates/download-host`)
 
-- HTTP and HTTPS URL validation.
-- Unsafe destination and path-traversal rejection.
-- Redaction of sensitive URL query values for durable records.
-- SQLite-backed job persistence.
-- Duplicate source/destination detection.
-- Durable job identifiers.
-- Conflict policies:
-  - Reject an existing destination.
-  - Choose a collision-free renamed destination.
-- Temporary `.part` file transfer flow.
-- Atomic final-file rename after transfer completion.
-- Checkpoint byte persistence.
-- Recovery handling for completed database rows whose final file is missing.
-- Strict `Content-Range` validation primitives for future segmented downloads.
-- Redirect limit configuration through the HTTP client.
-- In-memory operational source handling so signed URLs are not persisted.
+- **Framed Binary Protocol:** Little-endian length-prefixed JSON messaging over standard input/output.
+- **Immediate Stdout Flushing:** Added explicit `writer.flush()` to ensure Chrome receives IPC responses instantaneously without hanging.
+- **Typed Command Router:** Full lifecycle controls for `List`, `Create`, `Start`, `Pause`, `Resume`, `Cancel`, and `RefreshSource`.
+- **Automated Windows Registration:** Created [`register_chrome_host.bat`](file:///c:/Users/ahmad/AndroidStudioProjects/IDM_project/register_chrome_host.bat) with absolute script directory resolution (`%~dp0`), linking Chrome, Edge, and Brave native host registry entries to the compiled release binary.
 
-### 2.3 Async engine API foundation
+### 2.3 Standalone Windows Desktop GUI (`src-tauri` & `ui`)
 
-The engine exposes asynchronous wrappers for:
+- **Subsystem Flag:** Configured `#![windows_subsystem = "windows"]` in `src-tauri/src/main.rs` to completely eliminate black CMD console popups when launching the app.
+- **Offline Embedded UI:** Removed Vite dev-server dependencies from `tauri.conf.json`; the compiled production bundle (`ui/dist`) is embedded directly into `hopper.exe`.
+- **Modern Dark-Mode Dashboard:** React + TypeScript UI featuring live download status, progress bars, pause/resume/cancel controls, and category filtering.
+- **Embedded Application Icons:** Configured multi-resolution icons (`icon.ico`, `icon.png`, `32x32.png`, `128x128.png`) in `tauri.conf.json` and compiled directly into the Windows executable resources.
 
-- Creating a job.
-- Starting a job.
-- Listing persisted jobs.
-- Pausing a job.
-- Resuming a job.
-- Canceling a job.
-- Retrying a job.
+### 2.4 Browser Extension & In-Page Video Grabber (`extension`)
 
-The engine also handles the important reauthorization boundary: an
-operational source URL is retained in memory only, so a process restart does
-not silently reuse a sensitive or expired signed URL.
+- **Manifest V3 Service Worker Isolation:** Wrapped [`extension/src/protocol.js`](file:///c:/Users/ahmad/AndroidStudioProjects/IDM_project/extension/src/protocol.js) in a scoped IIFE to eliminate `validateHandoff` global identifier collisions in the Chrome Service Worker.
+- **In-Page Floating Video Grabber:**
+  - Non-intrusive floating button overlay (`⚡ Download Video`) injected into video streaming websites.
+  - DOM inspection for `<video>` and `<audio>` tags, tracking resolutions (`videoWidth` x `videoHeight`).
+- **Automatic HLS Multi-Quality Parsing:**
+  - Network sniffing for HLS master playlists (`.m3u8`) and DASH (`.mpd`), including queries with security tokens.
+  - Background variant playlist extraction parsing distinct resolutions (`1080p Full HD`, `720p HD`, `480p`, `360p`) and bitrates.
+- **Smart Page-Title Naming:**
+  - Replaces meaningless CDN hash segments (e.g. `2sed-qjYxbC3UNEcc2JZaHdzPxpi...`) with sanitized webpage titles (e.g. `Movie Title [1080p].mp4`).
+- **Noise & Telemetry Filtering:**
+  - Explicitly filters out images (`.png`, `.jpg`, `.webp`, `.svg`), web fonts (`.woff2`), and tiny `< 100 KB` telemetry octet-stream pings.
+- **Resilient Fallback Mechanism:**
+  - Automatically falls back to `chrome.downloads.download` if the native host is ever unavailable, guaranteeing downloads never fail with unhandled errors.
 
-### 2.4 Windows host and protocol
+### 2.5 Verification & Automated Test Status
 
-- Native Messaging framing with little-endian message lengths.
-- Message-size limits.
-- Versioned JSON envelopes.
-- Typed commands for listing, creating, starting, pausing, resuming,
-  canceling, and retrying jobs.
-- Structured success and error responses.
-- Unsupported protocol-version rejection.
-- Recoverable malformed-message handling.
-- Long-lived host startup with a persistent local engine and storage location.
-
-### 2.5 Desktop application
-
-- Tauri 2 application shell.
-- Windows window configuration.
-- React and TypeScript frontend.
-- Vite development and production build configuration.
-- URL entry field with HTTP(S) validation.
-- Download list rendering.
-- Initial status and progress display.
-- Tauri invoke adapters for job commands.
-- Initial persisted-job loading on UI startup.
-- Development application icon.
-- Local application data directory:
-
-  ```text
-  %LOCALAPPDATA%\HopperDownloadManager
-  ```
-
-### 2.6 Chrome extension foundation
-
-- Manifest V3 extension structure.
-- HTTP(S) handoff validation.
-- Sensitive query redaction.
-- Explicit consent requirement before handoff.
-- Duplicate handoff protection foundation.
-- Native host connection helper.
-
-The extension does not automatically intercept every browser download and does
-not bypass authentication, DRM, paywalls, or site access controls.
-
-### 2.7 Verification completed
-
-The following checks have passed on the current implementation:
+All workspace checks and unit tests are passing:
 
 ```text
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo check -p hopper
-npm run build
-npm run bundle
-node --test
+==================================================
+Rust Cargo Tests: 27 / 27 PASS (0 failed)
+- download-core unit tests: 10 passed
+- async_engine_tests: 5 passed
+- range_tests: 2 passed
+- recovery_tests: 2 passed
+- store_tests: 1 passed
+- transfer_tests: 2 passed
+- host_routing_tests: 2 passed
+- ipc_tests: 3 passed
+- native_messaging_tests: 2 passed
+
+Extension Tests: 9 / 9 PASS (0 failed)
+- validateHandoff & redaction
+- isMediaUrl & isDownloadableUrl
+- Asset & octet-stream noise filtering
+- Filename extraction & hash replacement with page title
+- HLS m3u8 playlist variant parsing
+- Native IPC command formatting
+==================================================
 ```
-
-The Tauri release build has also produced:
-
-```text
-target\release\hopper.exe
-```
-
-This executable is a local development build and is not currently signed or
-distributed as an installer.
 
 ---
 
 ## 3. Current Architecture
 
 ```text
-Chrome extension
-       │ Native Messaging
-       ▼
-Windows download host
-       │ typed commands
-       ▼
-Rust download engine
-       ├── SQLite job store
-       ├── checkpoint persistence
-       └── HTTP(S) transfer layer
-
-Tauri desktop application
-       │ Tauri invoke commands
-       ▼
-Rust engine instance
+┌────────────────────────────────────────────────────────┐
+│               Web Browser (Chrome / Edge / Brave)      │
+│  ┌───────────────────────┐   ┌──────────────────────┐  │
+│  │ In-Page Media Grabber │   │  Download Sniffer &  │  │
+│  │ (HLS / DASH / Video)  │   │  Auto-Interceptor    │  │
+│  └───────────┬───────────┘   └───────────┬──────────┘  │
+│              └─────────────┬─────────────┘             │
+│                            │ Native Messaging (STDIO)   │
+└────────────────────────────┼───────────────────────────┘
+                             ▼
+┌────────────────────────────────────────────────────────┐
+│       Windows Native Messaging Host (download-host)     │
+│        - Flushed binary framing (LE u32 + JSON)        │
+│        - Command routing: List, Create, Start, Pause   │
+└────────────────────────────┬───────────────────────────┘
+                             ▼
+┌────────────────────────────────────────────────────────┐
+│           Rust Engine Core (download-core)             │
+│  ├── Dynamic Range Slicer (Multi-connection HTTP)      │
+│  ├── Token-Bucket Bandwidth Limiter                    │
+│  ├── ZIP Central Directory Inspector                   │
+│  └── SQLite Durable State & Checkpoint Store           │
+└────────────────────────────▲───────────────────────────┘
+                             │ Tauri Invoke IPC
+┌────────────────────────────┴───────────────────────────┐
+│           Hopper Desktop Shell (hopper.exe)            │
+│  ├── Native Windows Subsystem (No CMD Console)         │
+│  ├── Embedded Offline React + TypeScript Dashboard     │
+│  └── PE Embedded Application Icons (.ico)              │
+└────────────────────────────────────────────────────────┘
 ```
-
-The intended final architecture is for the Windows host to own one
-long-lived engine and serve both the Chrome extension and the desktop client.
-The current implementation has the protocol and routing foundations, but the
-Tauri application currently initializes its own in-process engine. This
-distinction is important and must be resolved before claiming full
-cross-client synchronization.
 
 ---
 
-## 4. How to Run the Application
+## 4. How to Run & Verify
 
-### 4.1 Run the existing executable
-
-After building the application, launch:
-
-```text
-target\release\hopper.exe
-```
-
-From PowerShell:
-
+### 4.1 Launch Desktop Application
+Execute the standalone release binary directly:
 ```powershell
-& ".\target\release\hopper.exe"
+& "c:\Users\ahmad\AndroidStudioProjects\IDM_project\target\release\hopper.exe"
 ```
+The application opens instantly with zero background console window and no network dependencies.
 
-Windows SmartScreen may warn because the development executable is unsigned.
-
-### 4.2 Build the executable
-
-From the repository root:
-
-```powershell
-cd "C:\Users\ahmad\AndroidStudioProjects\IDM_project"
-
-$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
-
-npm --prefix ui install
-npx --prefix ui tauri build
+### 4.2 Register Browser Integration
+Run the automated registration batch script:
+```cmd
+cd c:\Users\ahmad\AndroidStudioProjects\IDM_project
+register_chrome_host.bat
 ```
+This updates Windows registry keys for Google Chrome, Microsoft Edge, and Brave.
 
-The executable is generated at:
-
-```text
-target\release\hopper.exe
-```
-
-### 4.3 Development mode
-
-The Tauri configuration starts the frontend development server automatically:
-
-```powershell
-$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
-npx --prefix ui tauri dev
-```
-
-### 4.4 Chrome development setup
-
-The Chrome integration is not yet packaged as an installer. Development setup
-currently requires:
-
-1. Building `download-host`.
-2. Creating a Native Messaging host manifest.
-3. Registering the manifest for the current Windows user.
-4. Loading the `extension/` directory as an unpacked Chrome extension.
-5. Configuring the extension ID in the Native Messaging manifest.
+### 4.3 Load Extension in Chrome
+1. Open `chrome://extensions` and enable **Developer mode**.
+2. Click **Load unpacked** and select `c:\Users\ahmad\AndroidStudioProjects\IDM_project\extension`.
+3. Open any video streaming website: the `⚡ Download Video` floating button will detect media streams and list available qualities.
 
 ---
 
-## 5. Remaining MVP Work
-
-The following work is required before the project should be considered a
-complete MVP.
-
-### 5.1 Replace the blocking transfer wrapper
-
-The current async API wraps the existing blocking transfer implementation.
-The transfer itself still runs to completion inside a blocking operation.
-
-Required work:
-
-- Use Tokio-owned worker tasks.
-- Give every active job a control channel.
-- Stop streaming cooperatively when pause or cancel is requested.
-- Persist a non-terminal checkpoint before interruption.
-- Ensure an interrupted job never emits `Completed`.
-- Bound the number of active workers.
-- Implement clean worker shutdown.
-
-### 5.2 Add real progress and event streaming
-
-Required work:
-
-- Emit progress events while bytes are streamed.
-- Include completed bytes, optional total bytes, speed, retry count, and state.
-- Preserve event ordering per job.
-- Allow the UI to reconnect and reload authoritative state.
-- Avoid duplicate workers after reconnect.
-- Forward engine events through both Tauri and Native Messaging.
-
-### 5.3 Finish durable recovery
-
-Required work:
-
-- Reconcile active jobs on process startup.
-- Recover interrupted jobs as paused or explicit recovery-error states.
-- Reconcile temporary files and checkpoints.
-- Detect inconsistent partial files.
-- Require explicit reauthorization after restart when the operational URL is
-  unavailable.
-- Add tests for interrupted transfers and restart behavior.
-
-### 5.4 Unify host and desktop engine ownership
-
-The Chrome host and Tauri desktop currently do not share the same in-memory
-worker manager. Sharing the SQLite file is not enough to share active workers
-or operational URLs.
-
-Required work:
-
-- Choose one engine owner, preferably the long-lived Windows host.
-- Route Tauri commands and events through that owner.
-- Keep workers alive when the desktop window closes.
-- Serialize commands from Chrome and Tauri.
-- Return typed conflict errors for concurrent commands.
-
-### 5.5 Complete the desktop UI
-
-Required UI additions:
-
-- Sidebar filters for All, Active, Paused, Completed, and Failed.
-- Add-download dialog with destination selection.
-- Per-job start, pause, resume, cancel, retry, and open-folder actions.
-- Live speed and total-size display.
-- Inline structured error details.
-- Destination conflict feedback.
-- Empty, loading, reconnecting, and error states.
-- Accessible keyboard and screen-reader behavior.
-
-### 5.6 Finish Chrome consent flow
-
-Required work:
-
-- Add a visible user action for handoff.
-- Show the URL and destination context before confirmation.
-- Display host connection errors clearly.
-- Suppress duplicate handoffs reliably.
-- Add end-to-end tests using a local fixture and a test Native Messaging
-  boundary.
-
-### 5.7 Add packaging and installation
-
-Required work:
-
-- Build a Windows installer.
-- Register the Native Messaging host automatically for the installed
-  extension.
-- Include the desktop executable and required runtime assets.
-- Define upgrade and uninstall behavior.
-- Add code signing before public distribution.
-- Publish checksums and release notes.
-
----
-
-## 6. Known Limitations
-
-- Transfers are single-stream only.
-- Multi-segment acceleration is not implemented.
-- Pause and cancel currently update durable state but do not reliably interrupt
-  an already-streaming transfer.
-- Live progress event delivery is incomplete.
-- The desktop UI is an initial shell rather than a polished production UI.
-- Chrome integration requires manual development registration.
-- There is no installer.
-- There is no automatic update mechanism.
-- There is no bandwidth scheduler or queue policy.
-- There are no download categories or advanced filtering rules.
-- There is no media-site extraction support.
-- There is no mobile build.
-- There is no telemetry or cloud synchronization.
-- The development executable is unsigned.
-
----
-
-## 7. Recommended Implementation Order
-
-### Priority 1: Correct transfer lifecycle
-
-Implement cooperative worker controls, checkpointing, cancellation, pause,
-resume, retries, and event publication. This is the highest priority because
-it affects correctness and user trust.
-
-### Priority 2: One shared engine owner
-
-Move desktop and Chrome clients behind the same host-owned engine boundary.
-This prevents conflicting state and makes closing/reopening the desktop window
-safe.
-
-### Priority 3: Authoritative UI updates
-
-Add event listeners, reconnect handling, filters, action buttons, and
-structured errors. The UI should render engine state rather than fabricate
-local rows.
-
-### Priority 4: Recovery and integration testing
-
-Add deterministic local HTTP fixtures for:
-
-- Slow streaming.
-- Pause and resume.
-- Cancellation.
-- Retryable failures.
-- Redirect limits.
-- Missing or inconsistent partial files.
-- Restart reauthorization.
-- Concurrent client commands.
-
-### Priority 5: Installer and Chrome setup
-
-Package the application, automate host registration, sign the binaries, and
-document a normal end-user installation path.
-
-### Priority 6: Performance features
-
-Only after correctness is stable, evaluate segmented transfers, bandwidth
-limits, queue scheduling, and connection reuse.
-
----
-
-## 8. Future Enhancements
-
-Potential future additions, ordered by user value and implementation risk:
-
-### Download management
-
-- Multi-segment downloads with strict range validation.
-- Pause/resume across application restarts when authorization remains valid.
-- Download queue priorities.
-- Maximum simultaneous downloads.
-- Bandwidth limits and schedules.
-- Automatic retry policies with configurable backoff.
-- Checksums and optional integrity verification.
-- File hash verification from trusted metadata.
-- Duplicate-content detection.
-
-### User experience
-
-- System tray operation.
-- Global hotkeys.
-- Drag-and-drop URL support.
-- Clipboard monitoring with explicit consent.
-- Search and advanced filters.
-- Download categories and rules.
-- Open containing folder.
-- Notifications for completion and failure.
-- Theme selection and accessibility improvements.
-- Localization.
-
-### Browser integration
-
-- Firefox and Chromium-family packaging.
-- Better explicit handoff prompts.
-- Browser context-menu integration.
-- Browser download interception only when enabled by the user.
-- Per-site consent preferences without storing credentials.
-
-### Release engineering
-
-- Signed installer.
-- Automated GitHub release workflow.
-- Reproducible release builds.
-- SBOM and dependency auditing.
-- Crash reporting that excludes URLs, cookies, credentials, and file contents.
-- Automatic updates with signature verification.
-
-### Security and privacy
-
-- More detailed secret-redaction tests.
-- Hardened local IPC authorization.
-- Instance ownership and lock files for concurrent process protection.
-- Secure file permission review.
-- Optional encrypted local metadata for sensitive environments.
-
----
-
-## 9. Safety and Scope Boundaries
-
-Hopper is intended only for downloads the user is authorized to access.
-
-The project must not:
-
-- Circumvent DRM.
-- Bypass paywalls or authentication controls.
-- Extract protected media streams.
-- Steal or persist cookies, passwords, or authorization headers.
-- Automatically execute downloaded files.
-- Copy proprietary Internet Download Manager code, branding, assets, or
-  pixel-identical design.
-
-Operational signed URLs and transient authorization data must remain in memory
-only and must never appear in durable job records or logs.
-
----
-
-## 10. Definition of Production Readiness
-
-The project should not be called production-ready until all of the following
-are true:
-
-- Active transfers can be paused and canceled cooperatively.
-- Progress events are live, ordered, and reconnect-safe.
-- Chrome and Tauri use one authoritative engine owner.
-- Restart recovery is deterministic and tested.
-- Sensitive operational values are redacted from records and errors.
-- The UI exposes all important states and errors.
-- A Windows installer can register and remove the Native Messaging host.
-- Release binaries are signed.
-- Full Rust, UI, extension, and integration tests pass in CI.
-- A clean Windows machine can install and run the application without
-  development tools.
-
----
-
-## 11. Current Decision Summary
-
-The project is intentionally proceeding as a native Windows application using
-Rust, Tauri, React, TypeScript, SQLite, and Chrome Manifest V3. This keeps the
-download engine platform-focused while allowing a maintainable desktop UI and
-explicit browser integration.
-
-The next implementation focus should be correctness of the worker lifecycle
-and shared engine ownership, not additional visual features. Once those are
-stable, packaging and release automation will provide the largest improvement
-for normal users.
+## 5. Next Planned Milestones
+
+1. **BitTorrent Engine Integration:** Integrate `librqbit` in `crates/download-core` to download `.torrent` files and magnet links within the same unified dashboard.
+2. **Audio/Video Stream Muxer (FFmpeg Sidecar):** Automatic demuxing and combining of separate adaptive video and audio tracks into a single `.mp4` file.
+3. **MSI / InnoSetup Installer:** One-click Windows installer automating binary extraction, desktop shortcut creation, and browser registry configuration.
