@@ -14,6 +14,7 @@ pub fn validate_content_range(
     if unit != "bytes" {
         return Err(EngineError::InvalidJob("unsupported Content-Range unit".into()));
     }
+
     let (bounds, total) = range
         .split_once('/')
         .ok_or_else(|| EngineError::InvalidJob("malformed Content-Range".into()))?;
@@ -30,6 +31,23 @@ pub fn validate_content_range(
     } else {
         Err(EngineError::InvalidJob("unexpected Content-Range".into()))
     }
+}
+
+pub fn validate_range_response(
+    status: reqwest::StatusCode,
+    content_range: Option<&str>,
+    expected_start: u64,
+    expected_end: u64,
+    expected_total: u64,
+) -> Result<(), EngineError> {
+    if status != reqwest::StatusCode::PARTIAL_CONTENT {
+        return Err(EngineError::InvalidJob(format!(
+            "range request returned unexpected HTTP status {status}"
+        )));
+    }
+    let value = content_range
+        .ok_or_else(|| EngineError::InvalidJob("range response missing Content-Range".into()))?;
+    validate_content_range(value, expected_start, expected_end, expected_total)
 }
 
 #[derive(Debug, Clone, Default)]

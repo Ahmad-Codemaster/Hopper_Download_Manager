@@ -9,8 +9,9 @@ const {
   extractFilename,
   parseM3u8Variants,
   formatNativeCommand,
+  isSupportedYouTubeFormat,
 } = require('../src/protocol');
-const { shouldHandoff } = require('../src/background');
+const { shouldHandoff, executeHandoff } = require('../src/background');
 
 test('accepts authorized HTTP handoff and redacts query values', () => {
   assert.equal(validateHandoff({ url: 'https://example.test/file?token=secret' }), true);
@@ -189,4 +190,40 @@ test('CRIT-03: identifies YouTube videoplayback stream chunks as media', () => {
   const ytAudioUrl = 'https://rr2---sn-4g5ednks.googlevideo.com/videoplayback?expire=1728938400&id=o-ABC&itag=140&source=youtube&mime=audio%2Fmp4&range=0-524288';
   assert.equal(isMediaUrl(ytAudioUrl, 'audio/mp4', 524288), true);
   assert.equal(classifyMedia(ytAudioUrl, 'audio/mp4'), 'audio');
+});
+
+test('rejects adaptive YouTube tracks as unsupported complete videos', () => {
+  assert.equal(isSupportedYouTubeFormat({
+    url: 'https://cdn.example/video',
+    mimeType: 'video/mp4',
+    hasAudio: false,
+  }), false);
+  assert.equal(isSupportedYouTubeFormat({
+    url: 'https://cdn.example/video',
+    mimeType: 'video/mp4',
+    hasAudio: true,
+  }), true);
+});
+
+test('does not report native Start errors as successful handoffs', async () => {
+  const previousChrome = global.chrome;
+  let call = 0;
+  global.chrome = {
+    runtime: {
+      sendNativeMessage(_host, _command, callback) {
+        call += 1;
+        callback(call === 1
+          ? { ok: true, payload: { job_id: 'job-1' } }
+          : { ok: false, error: 'HTTP 403 for https://signed.example/video?token=secret' });
+      },
+      lastError: null,
+    },
+  };
+  try {
+    const result = await executeHandoff('https://signed.example/video?token=secret', 'video.mp4');
+    assert.equal(result.ok, false);
+    assert.equal(result.error.includes('token=secret'), false);
+  } finally {
+    global.chrome = previousChrome;
+  }
 });

@@ -41,7 +41,7 @@
     // 1. Progressive streams (Video + Audio combined, e.g. 720p, 360p)
     if (Array.isArray(data.streamingData.formats)) {
       for (const f of data.streamingData.formats) {
-        if (f.url) {
+        if (f.url && (f.mimeType || '').startsWith('video/')) {
           const quality = f.qualityLabel || (f.height ? `${f.height}p` : '360p');
           formats.push({
             url: f.url,
@@ -50,28 +50,6 @@
             size: f.contentLength ? parseInt(f.contentLength, 10) : 0,
             type: 'video',
             hasAudio: true,
-            itag: f.itag,
-          });
-        }
-      }
-    }
-
-    // 2. Adaptive streams (Individual video & audio tracks)
-    if (Array.isArray(data.streamingData.adaptiveFormats)) {
-      for (const f of data.streamingData.adaptiveFormats) {
-        if (f.url) {
-          const isAudio = (f.mimeType || '').startsWith('audio/');
-          let quality = f.qualityLabel || (f.height ? `${f.height}p` : 'Video');
-          if (isAudio) {
-            quality = f.audioBitrate ? `Audio (${f.audioBitrate}kbps)` : 'Audio Track';
-          }
-          formats.push({
-            url: f.url,
-            quality,
-            mimeType: f.mimeType,
-            size: f.contentLength ? parseInt(f.contentLength, 10) : 0,
-            type: isAudio ? 'audio' : 'video',
-            hasAudio: false,
             itag: f.itag,
           });
         }

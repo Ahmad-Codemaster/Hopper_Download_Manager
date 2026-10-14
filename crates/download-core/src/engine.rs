@@ -7,11 +7,26 @@ use std::fs::{self, File};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use url::Url;
+
+fn sanitize_source(source: &str) -> String {
+    Url::parse(source)
+        .ok()
+        .map(|url| {
+            format!(
+                "{}{}",
+                url.host_str().unwrap_or("<unknown>"),
+                url.path()
+            )
+        })
+        .unwrap_or_else(|| "<invalid-url>".into())
+}
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     pub destination_root: PathBuf,
+    pub inactivity_timeout: Duration,
 }
 
 pub struct TransferEngine {
@@ -23,19 +38,29 @@ pub struct TransferEngine {
     pub event_tx: tokio::sync::broadcast::Sender<JobEvent>,
     pub limiter: Arc<crate::limiter::SpeedLimiter>,
     pub max_concurrent_jobs: Arc<std::sync::atomic::AtomicUsize>,
+    inactivity_timeout: Duration,
 }
 
 #[derive(Clone)]
 pub struct Engine {
     inner: Arc<Mutex<Option<Arc<TransferEngine>>>>,
     destination_root: PathBuf,
+    inactivity_timeout: Duration,
 }
 
 impl Engine {
     pub fn new(destination_root: PathBuf) -> Result<Self, EngineError> {
+        Self::with_timeouts(destination_root, Duration::from_secs(30))
+    }
+
+    pub fn with_timeouts(
+        destination_root: PathBuf,
+        inactivity_timeout: Duration,
+    ) -> Result<Self, EngineError> {
         Ok(Self {
             inner: Arc::new(Mutex::new(None)),
             destination_root,
+            inactivity_timeout,
         })
     }
 
@@ -47,6 +72,7 @@ impl Engine {
         if guard.is_none() {
             let engine = Arc::new(TransferEngine::new(EngineConfig {
                 destination_root: self.destination_root.clone(),
+                inactivity_timeout: self.inactivity_timeout,
             })?);
             *guard = Some(engine);
         }
@@ -175,6 +201,7 @@ impl TransferEngine {
         let store = JobStore::open(&config.destination_root.join("jobs.db"))?;
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::limited(10))
+            .connect_timeout(config.inactivity_timeout)
             .build()
             .map_err(|error| EngineError::InvalidJob(error.to_string()))?;
         let (event_tx, _) = tokio::sync::broadcast::channel(256);
@@ -187,6 +214,7 @@ impl TransferEngine {
             event_tx,
             limiter: Arc::new(crate::limiter::SpeedLimiter::default()),
             max_concurrent_jobs: Arc::new(std::sync::atomic::AtomicUsize::new(3)),
+            inactivity_timeout: config.inactivity_timeout,
         })
     }
 
@@ -215,6 +243,33 @@ impl TransferEngine {
             .insert(id.clone(), new_source.to_string());
         self.store.update_source(&id, &new_source)?;
         Ok(())
+    }
+
+    fn fail_active_job(
+        &self,
+        id: &JobId,
+        completed_bytes: u64,
+        total_bytes: Option<u64>,
+        reason: &str,
+    ) {
+        let _ = self
+            .active_cancellations
+            .lock()
+            .map(|mut guard| guard.remove(id));
+        let _ = self.store.update_checkpoint(id.clone(), completed_bytes);
+        let _ = self.store.set_state(id.clone(), JobState::Failed);
+        eprintln!(
+            "[hopper] job={} state=failed bytes_written={} total_bytes={:?} reason={}",
+            id.0, completed_bytes, total_bytes, reason
+        );
+        self.emit_event(JobEvent {
+            job_id: id.clone(),
+            state: JobState::Failed,
+            completed_bytes,
+            total_bytes,
+            speed_bytes_per_sec: 0,
+            retry_count: 0,
+        });
     }
 
     pub async fn stop_job(&self, id: &JobId, state: JobState) -> Result<(), EngineError> {
@@ -314,23 +369,61 @@ impl TransferEngine {
             }
         }
 
-        let file = Arc::new(
-            std::fs::OpenOptions::new()
+        let file = match std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
                 .truncate(false)
                 .open(&temporary)
-                .map_err(|e| EngineError::InvalidJob(e.to_string()))?,
-        );
+        {
+            Ok(file) => Arc::new(file),
+            Err(error) => {
+                let reason = format!("file open failed: {error}");
+                self.fail_active_job(&id, 0, job.total_bytes, &reason);
+                return Err(EngineError::InvalidJob(reason));
+            }
+        };
 
         // Send initial GET request
-        let initial_response = self
-            .client
-            .get(&source)
-            .send()
-            .await
-            .map_err(|e| EngineError::InvalidJob(e.to_string()))?;
+        let request_started = std::time::Instant::now();
+        eprintln!(
+            "[hopper] job={} request_start source={}",
+            id.0,
+            sanitize_source(&source)
+        );
+        let initial_response = match tokio::time::timeout(
+            self.inactivity_timeout,
+            self.client.get(&source).send(),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                let reason = format!("request failed: {error}");
+                self.fail_active_job(&id, 0, job.total_bytes, &reason);
+                return Err(EngineError::InvalidJob(reason));
+            }
+            Err(_) => {
+                let reason = format!(
+                    "request timed out after {} ms",
+                    self.inactivity_timeout.as_millis()
+                );
+                self.fail_active_job(&id, 0, job.total_bytes, &reason);
+                return Err(EngineError::InvalidJob(reason));
+            }
+        };
+        eprintln!(
+            "[hopper] job={} response status={} latency_ms={} content_type={} content_length={:?}",
+            id.0,
+            initial_response.status(),
+            request_started.elapsed().as_millis(),
+            initial_response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or(""),
+            initial_response.content_length()
+        );
 
         if !initial_response.status().is_success() {
             // CRIT-02 fix: remove the active slot BEFORE returning so it is not
@@ -395,6 +488,10 @@ impl TransferEngine {
                 let final_bytes = content_length.unwrap_or_else(|| {
                     std::fs::metadata(&final_path).map(|m| m.len()).unwrap_or(0)
                 });
+                eprintln!(
+                    "[hopper] job={} state=completed bytes_written={} total_bytes={}",
+                    id.0, final_bytes, final_bytes
+                );
                 self.emit_event(JobEvent {
                     job_id: id,
                     state: JobState::Completed,
@@ -408,11 +505,16 @@ impl TransferEngine {
             Err(e) => {
                 let current_state = self.store.get_job(id.clone())?.state;
                 if current_state != JobState::Paused && current_state != JobState::Canceled {
+                    let completed_bytes = self.store.get_job(id.clone())?.completed_bytes;
                     let _ = self.store.set_state(id.clone(), JobState::Failed);
+                    eprintln!(
+                        "[hopper] job={} state=failed bytes_written={} reason={}",
+                        id.0, completed_bytes, e
+                    );
                     self.emit_event(JobEvent {
                         job_id: id,
                         state: JobState::Failed,
-                        completed_bytes: 0,
+                        completed_bytes,
                         total_bytes: content_length,
                         speed_bytes_per_sec: 0,
                         retry_count: 0,
@@ -435,40 +537,85 @@ impl TransferEngine {
         let mut last_instant = std::time::Instant::now();
         let mut last_bytes = 0u64;
 
-        while let Ok(Some(chunk)) = response.chunk().await {
+        let mut first_chunk = true;
+        loop {
             if *cancel_rx.borrow() {
                 self.store.update_checkpoint(id.clone(), current_offset)?;
                 return Err(EngineError::InvalidJob("job paused or canceled".into()));
             }
-            let chunk_len = chunk.len() as u64;
-            self.limiter.consume(chunk_len).await;
-            crate::transfer::write_at(file, &chunk, current_offset)
-                .map_err(|e| EngineError::InvalidJob(e.to_string()))?;
-            current_offset += chunk_len;
+            match tokio::time::timeout(self.inactivity_timeout, response.chunk()).await {
+                Ok(Ok(Some(chunk))) => {
+                    if first_chunk {
+                        eprintln!(
+                            "[hopper] job={} first_chunk bytes={} elapsed_ms={}",
+                            id.0,
+                            chunk.len(),
+                            last_instant.elapsed().as_millis()
+                        );
+                        first_chunk = false;
+                    }
+                    let chunk_len = chunk.len() as u64;
+                    self.limiter.consume(chunk_len).await;
+                    crate::transfer::write_at(file, &chunk, current_offset).map_err(|e| {
+                        EngineError::InvalidJob(format!("file write failed after {} bytes: {e}", current_offset))
+                    })?;
+                    current_offset += chunk_len;
 
-            // Emit live progress periodically
-            if last_instant.elapsed() >= std::time::Duration::from_millis(400) {
-                let elapsed = last_instant.elapsed().as_secs_f64();
-                let speed = if elapsed > 0.0 {
-                    (current_offset.saturating_sub(last_bytes) as f64 / elapsed) as u64
-                } else {
-                    0
-                };
-                last_bytes = current_offset;
-                last_instant = std::time::Instant::now();
+                    if last_instant.elapsed() >= Duration::from_millis(400) {
+                        let elapsed = last_instant.elapsed().as_secs_f64();
+                        let speed = if elapsed > 0.0 {
+                            (current_offset.saturating_sub(last_bytes) as f64 / elapsed) as u64
+                        } else {
+                            0
+                        };
+                        last_bytes = current_offset;
+                        last_instant = std::time::Instant::now();
+                        self.emit_event(JobEvent {
+                            job_id: id.clone(),
+                            state: JobState::Active,
+                            completed_bytes: current_offset,
+                            total_bytes,
+                            speed_bytes_per_sec: speed,
+                            retry_count: 0,
+                        });
+                    }
+                }
+                Ok(Ok(None)) => break,
+                Ok(Err(error)) => {
+                    let reason = format!("response body failed after {} bytes: {error}", current_offset);
+                    eprintln!("[hopper] job={} body_error={}", id.0, reason);
+                    self.store.update_checkpoint(id.clone(), current_offset)?;
+                    return Err(EngineError::InvalidJob(reason));
+                }
+                Err(_) => {
+                    let reason = format!(
+                        "response body timed out after {} bytes ({} ms inactivity)",
+                        current_offset,
+                        self.inactivity_timeout.as_millis()
+                    );
+                    eprintln!("[hopper] job={} timeout={}", id.0, reason);
+                    self.store.update_checkpoint(id.clone(), current_offset)?;
+                    return Err(EngineError::InvalidJob(reason));
+                }
+            }
+        }
 
-                self.emit_event(JobEvent {
-                    job_id: id.clone(),
-                    state: JobState::Active,
-                    completed_bytes: current_offset,
-                    total_bytes,
-                    speed_bytes_per_sec: speed,
-                    retry_count: 0,
-                });
+        if let Some(expected) = total_bytes {
+            if current_offset != expected {
+                let reason = format!(
+                    "incomplete response: wrote {} of {} bytes",
+                    current_offset, expected
+                );
+                self.store.update_checkpoint(id.clone(), current_offset)?;
+                return Err(EngineError::InvalidJob(reason));
             }
         }
 
         self.store.update_checkpoint(id.clone(), current_offset)?;
+        eprintln!(
+            "[hopper] job={} bytes_written={} final=stream_complete",
+            id.0, current_offset
+        );
         Ok(())
     }
 
@@ -536,6 +683,7 @@ impl TransferEngine {
             let source = source.to_string();
             let cancel_rx = cancel_rx.clone();
             let limiter = Arc::clone(&self.limiter);
+            let inactivity_timeout = self.inactivity_timeout;
 
             let task = tokio::spawn(async move {
                 loop {
@@ -583,23 +731,63 @@ impl TransferEngine {
                     };
 
                     let range_header = format!("bytes={current_start}-{end}");
-                    let mut resp = match client.get(&source).header("Range", range_header).send().await {
-                        Ok(r) if r.status().is_success() => r,
-                        _ => {
+                    let mut resp = match tokio::time::timeout(
+                        inactivity_timeout,
+                        client.get(&source).header("Range", &range_header).send(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(r)) if r.status() == reqwest::StatusCode::PARTIAL_CONTENT => r,
+                        Ok(Ok(r)) => {
                             let mut segs = segments.lock().unwrap();
                             if let Some(seg) = segs.get_mut(seg_idx) {
                                 seg.claimed = false;
                             }
-                            break;
+                            return Err(format!(
+                                "range {} returned unexpected HTTP status {}",
+                                range_header,
+                                r.status()
+                            ));
                         }
+                        Ok(Err(error)) => return Err(format!("range request failed: {error}")),
+                        Err(_) => return Err(format!(
+                            "range request timed out after {} ms",
+                            inactivity_timeout.as_millis()
+                        )),
                     };
+                    let content_range = resp
+                        .headers()
+                        .get(reqwest::header::CONTENT_RANGE)
+                        .and_then(|value| value.to_str().ok())
+                        ;
+                    crate::transfer::validate_range_response(
+                        resp.status(),
+                        content_range,
+                        current_start,
+                        end,
+                        total_bytes,
+                    )
+                    .map_err(|error| error.to_string())?;
 
                     let mut current_offset = current_start;
-                    let mut success = true;
-
-                    while let Ok(Some(chunk)) = resp.chunk().await {
+                    loop {
+                        let chunk = match tokio::time::timeout(inactivity_timeout, resp.chunk()).await {
+                            Ok(Ok(Some(chunk))) => chunk,
+                            Ok(Ok(None)) => break,
+                            Ok(Err(error)) => {
+                                return Err(format!(
+                                    "range body failed after {} bytes: {error}",
+                                    current_offset
+                                ));
+                            }
+                            Err(_) => {
+                                return Err(format!(
+                                    "range body timed out after {} bytes",
+                                    current_offset
+                                ));
+                            }
+                        };
                         if *cancel_rx.borrow() {
-                            success = false;
                             break;
                         }
 
@@ -622,10 +810,8 @@ impl TransferEngine {
 
                         if write_len > 0 {
                             limiter.consume(write_len as u64).await;
-                            if crate::transfer::write_at(&file, &chunk[..write_len], current_offset).is_err() {
-                                success = false;
-                                break;
-                            }
+                            crate::transfer::write_at(&file, &chunk[..write_len], current_offset)
+                                .map_err(|error| format!("range file write failed: {error}"))?;
                             current_offset += write_len as u64;
                             total_completed.fetch_add(write_len as u64, Ordering::Relaxed);
 
@@ -641,7 +827,7 @@ impl TransferEngine {
                         }
                     }
 
-                    if !success || *cancel_rx.borrow() {
+                    if *cancel_rx.borrow() {
                         let mut segs = segments.lock().unwrap();
                         if let Some(seg) = segs.get_mut(seg_idx) {
                             if (seg.end + 1).saturating_sub(seg.start + seg.completed) > 0 {
@@ -651,15 +837,35 @@ impl TransferEngine {
                         break;
                     }
                 }
+                Ok(())
             });
             tasks.push(task);
         }
 
+        let mut task_error = None;
         for task in tasks {
-            let _ = task.await;
+            match task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    if task_error.is_none() {
+                        task_error = Some(error);
+                    }
+                }
+                Err(error) => {
+                    if task_error.is_none() {
+                        task_error = Some(format!("range worker failed: {error}"));
+                    }
+                }
+            }
         }
 
         progress_task.abort();
+
+        if let Some(error) = task_error {
+            let completed = total_completed.load(Ordering::Relaxed);
+            self.store.update_checkpoint(id.clone(), completed)?;
+            return Err(EngineError::InvalidJob(error));
+        }
 
         let current_segments = segments.lock().unwrap().clone();
         let _ = self.store.save_segments(id, &current_segments);

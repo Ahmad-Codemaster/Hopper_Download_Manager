@@ -1,407 +1,81 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Download, Plus, Search, Settings } from "lucide-react";
 import "./styles.css";
-import {
-  createAndStart,
-  listJobs,
-  controlJob,
-  refreshSource,
-  onProgress,
-  setSpeedLimit,
-  getSpeedLimit,
-  setMaxConcurrent,
-  getMaxConcurrent,
-  previewZipArchive,
-  type Job,
-  type ZipEntryPreview,
-} from "./lib/api";
+import { createAndStart, getMaxConcurrent, getSpeedLimit, listJobs, onProgress, previewZipArchive, setMaxConcurrent, setSpeedLimit, controlJob, type Job, type ZipEntryPreview } from "./lib/api";
+import { applyJobEvent, filterJobs, getJobCounts, type Category } from "./lib/jobs";
+import { formatBytes } from "./lib/format";
+import { DownloadDetails } from "./components/DownloadDetails";
+import { DownloadRow } from "./components/DownloadRow";
 
-function formatBytes(bytes: number | null | undefined): string {
-  if (bytes === null || bytes === undefined || isNaN(bytes)) return "Unknown";
-  if (bytes === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
-}
-
-function formatSpeed(bytesPerSec: number | undefined): string {
-  if (!bytesPerSec || bytesPerSec === 0) return "--";
-  return `${formatBytes(bytesPerSec)}/s`;
-}
+const categories: Array<[Category, string]> = [["all", "All downloads"], ["downloading", "Downloading"], ["queued", "Queued"], ["completed", "Completed"], ["failed", "Failed"], ["paused", "Paused"]];
 
 function App() {
-  const [url, setUrl] = useState("");
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [filter, setFilter] = useState<"All" | "Active" | "Paused" | "Completed">("All");
-  const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const [category, setCategory] = useState<Category>("all");
+  const [query, setQuery] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [newUrl, setNewUrl] = useState("");
-  const [speedLimit, setSpeedLimitState] = useState<number>(0);
-  const [maxConcurrent, setMaxConcurrentState] = useState<number>(3);
-  const [previewFiles, setPreviewFiles] = useState<ZipEntryPreview[] | null>(null);
-  const [previewArchiveName, setPreviewArchiveName] = useState<string>("");
-  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [speedLimit, setSpeedLimitState] = useState(0);
+  const [maxConcurrent, setMaxConcurrentState] = useState(3);
+  const [preview, setPreview] = useState<{ name: string; files: ZipEntryPreview[] } | null>(null);
+  const [pendingActions, setPendingActions] = useState<Set<string>>(new Set());
 
-  const reloadJobs = () => {
-    listJobs()
-      .then(setJobs)
-      .catch((error) => console.error("Could not load downloads", error));
-  };
-
+  const reload = () => listJobs().then(setJobs).catch((e) => setError(String(e)));
   useEffect(() => {
-    reloadJobs();
-    getSpeedLimit().then(setSpeedLimitState).catch(() => {});
-    getMaxConcurrent().then(setMaxConcurrentState).catch(() => {});
-
-    let unlistenFn: (() => void) | undefined;
-    onProgress((event) => {
-      setJobs((currentJobs) =>
-        currentJobs.map((job) => {
-          if (job.id === event.job_id) {
-            return {
-              ...job,
-              state: event.state,
-              completed_bytes: event.completed_bytes,
-              total_bytes: event.total_bytes ?? job.total_bytes,
-              speed_bytes_per_sec: event.speed_bytes_per_sec,
-            };
-          }
-          return job;
-        })
-      );
-    }).then((unlisten) => {
-      unlistenFn = unlisten;
+    reload();
+    getSpeedLimit().then(setSpeedLimitState).catch(() => undefined);
+    getMaxConcurrent().then(setMaxConcurrentState).catch(() => undefined);
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    onProgress((event) => setJobs((current) => applyJobEvent(current, event))).then((cleanup) => {
+      if (disposed) cleanup();
+      else unlisten = cleanup;
     });
-
-    return () => {
-      if (unlistenFn) unlistenFn();
-    };
+    return () => { disposed = true; unlisten?.(); };
   }, []);
 
+  const counts = getJobCounts(jobs);
+  const visibleJobs = useMemo(() => filterJobs(jobs, query, category), [jobs, query, category]);
+  const selected = jobs.find((job) => job.id === selectedId);
+
+  const action = async (command: "start_job" | "pause_job" | "resume_job" | "cancel_job" | "retry_job", id: string) => {
+    if (pendingActions.has(id)) return;
+    setPendingActions((current) => new Set(current).add(id));
+    try { setError(null); await controlJob(command, id); await reload(); } catch (e) { setError(`Could not ${command.replace("_job", "").replace("_", " ")} download: ${String(e)}`); } finally { setPendingActions((current) => { const next = new Set(current); next.delete(id); return next; }); }
+  };
   const add = async () => {
     try {
-      const parsed = new URL(url);
-      if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("HTTP(S) only");
-      const filename = parsed.pathname.split("/").filter(Boolean).pop() || "download";
-      const id = await createAndStart(parsed.toString(), filename);
-      setJobs((current) => [
-        ...current,
-        {
-          id,
-          source: parsed.toString(),
-          destination: filename,
-          state: "Active",
-          completed_bytes: 0,
-          total_bytes: null,
-          speed_bytes_per_sec: 0,
-        },
-      ]);
-      setUrl("");
-    } catch (error) {
-      console.error(error);
-      alert("Enter a valid HTTP or HTTPS URL.");
-    }
+      const parsed = new URL(newUrl);
+      if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("HTTP(S) URLs only");
+      if (parsed.username || parsed.password) throw new Error("URLs with embedded credentials are not supported");
+      const destination = parsed.pathname.split("/").filter(Boolean).pop() || "download";
+      await createAndStart(parsed.toString(), destination);
+      setNewUrl(""); setShowAdd(false); await reload();
+    } catch (e) { setError(`Could not add download: ${String(e)}`); }
   };
-
-  const handleAction = async (
-    command: "start_job" | "pause_job" | "resume_job" | "cancel_job" | "retry_job",
-    jobId: string
-  ) => {
-    try {
-      await controlJob(command, jobId);
-      reloadJobs();
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const submitRefresh = async (jobId: string) => {
-    try {
-      new URL(newUrl); // Validate
-      await refreshSource(jobId, newUrl);
-      setRefreshingId(null);
-      setNewUrl("");
-      await controlJob("start_job", jobId);
-      reloadJobs();
-    } catch (e) {
-      alert("Please enter a valid HTTP(S) URL for refreshing.");
-    }
-  };
-
-  const handleSpeedLimitChange = async (val: number) => {
-    setSpeedLimitState(val);
-    await setSpeedLimit(val);
-  };
-
-  const handleMaxConcurrentChange = async (val: number) => {
-    setMaxConcurrentState(val);
-    await setMaxConcurrent(val);
-  };
-
-  const handlePreviewArchive = async (job: Job) => {
+  const previewArchive = async (job: Job) => {
     if (!job.total_bytes) return;
-    setIsLoadingPreview(true);
-    setPreviewArchiveName(job.destination);
-    try {
-      const files = await previewZipArchive(job.source, job.total_bytes);
-      setPreviewFiles(files);
-    } catch (err) {
-      alert(`Could not preview archive: ${err}`);
-    } finally {
-      setIsLoadingPreview(false);
-    }
+    try { setPreview({ name: job.destination, files: await previewZipArchive(job.source, job.total_bytes) }); } catch (e) { setError(`Could not preview archive: ${String(e)}`); }
   };
 
-  const filteredJobs = jobs.filter((job) => {
-    if (filter === "Active") return job.state === "Active" || job.state === "Queued";
-    if (filter === "Paused") return job.state === "Paused";
-    if (filter === "Completed") return job.state === "Completed";
-    return true;
-  });
-
-  return (
-    <main>
-      <header>
-        <div className="header-left">
-          <div className="logo-badge">IDM</div>
-          <div>
-            <h1>Hopper</h1>
-            <span>High-Speed Download Accelerator</span>
-          </div>
-        </div>
-
-        <div className="header-controls">
-          <div className="control-group">
-            <label>⚡ Speed Limit:</label>
-            <select
-              value={speedLimit}
-              onChange={(e) => handleSpeedLimitChange(Number(e.target.value))}
-            >
-              <option value={0}>Unlimited</option>
-              <option value={1048576}>1 MB/s</option>
-              <option value={2097152}>2 MB/s</option>
-              <option value={5242880}>5 MB/s</option>
-              <option value={10485760}>10 MB/s</option>
-              <option value={20971520}>20 MB/s</option>
-            </select>
-          </div>
-
-          <div className="control-group">
-            <label>🚦 Max Active:</label>
-            <select
-              value={maxConcurrent}
-              onChange={(e) => handleMaxConcurrentChange(Number(e.target.value))}
-            >
-              <option value={1}>1 at a time</option>
-              <option value={2}>2 at a time</option>
-              <option value={3}>3 at a time</option>
-              <option value={5}>5 at a time</option>
-              <option value={0}>Unlimited</option>
-            </select>
-          </div>
-        </div>
-      </header>
-
-      <section className="add">
-        <input
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && add()}
-          placeholder="Paste direct download URL (games, videos, files)..."
-        />
-        <button className="primary-btn" onClick={add}>
-          + Add Download
-        </button>
-      </section>
-
-      <nav>
-        <button className={filter === "All" ? "active" : ""} onClick={() => setFilter("All")}>
-          All ({jobs.length})
-        </button>
-        <button
-          className={filter === "Active" ? "active" : ""}
-          onClick={() => setFilter("Active")}
-        >
-          Downloading (
-          {jobs.filter((j) => j.state === "Active" || j.state === "Queued").length})
-        </button>
-        <button
-          className={filter === "Paused" ? "active" : ""}
-          onClick={() => setFilter("Paused")}
-        >
-          Paused ({jobs.filter((j) => j.state === "Paused").length})
-        </button>
-        <button
-          className={filter === "Completed" ? "active" : ""}
-          onClick={() => setFilter("Completed")}
-        >
-          Completed ({jobs.filter((j) => j.state === "Completed").length})
-        </button>
-      </nav>
-
-      <section className="list">
-        {filteredJobs.length === 0 ? (
-          <p className="empty">No downloads found in this view.</p>
-        ) : (
-          filteredJobs.map((job) => {
-            const percent =
-              job.total_bytes && job.total_bytes > 0
-                ? Math.min(100, (job.completed_bytes / job.total_bytes) * 100).toFixed(1)
-                : null;
-
-            const isZip = job.destination.toLowerCase().endsWith(".zip");
-
-            return (
-              <article key={job.id} className={`job-card ${job.state.toLowerCase()}`}>
-                <div className="job-header">
-                  <div>
-                    <strong className="filename">{job.destination}</strong>
-                    <span className={`badge ${job.state.toLowerCase()}`}>{job.state}</span>
-                  </div>
-                  <div className="actions">
-                    {isZip && job.total_bytes && (
-                      <button
-                        className="action-btn preview"
-                        onClick={() => handlePreviewArchive(job)}
-                        disabled={isLoadingPreview}
-                      >
-                        📦 {isLoadingPreview ? "Inspecting..." : "Preview ZIP"}
-                      </button>
-                    )}
-                    {job.state === "Active" && (
-                      <button
-                        className="action-btn"
-                        onClick={() => handleAction("pause_job", job.id)}
-                      >
-                        ⏸ Pause
-                      </button>
-                    )}
-                    {job.state === "Paused" && (
-                      <button
-                        className="action-btn play"
-                        onClick={() => handleAction("resume_job", job.id)}
-                      >
-                        ▶ Resume
-                      </button>
-                    )}
-                    {job.state === "Failed" && (
-                      <>
-                        <button
-                          className="action-btn play"
-                          onClick={() => handleAction("retry_job", job.id)}
-                        >
-                          🔄 Retry
-                        </button>
-                        <button
-                          className="action-btn warning"
-                          onClick={() => {
-                            setRefreshingId(job.id);
-                            setNewUrl("");
-                          }}
-                        >
-                          🔗 Refresh Link
-                        </button>
-                      </>
-                    )}
-                    {(job.state === "Active" || job.state === "Paused" || job.state === "Queued") && (
-                      <button
-                        className="action-btn danger"
-                        onClick={() => handleAction("cancel_job", job.id)}
-                      >
-                        ✕ Cancel
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="progress-container">
-                  <progress
-                    value={job.completed_bytes}
-                    max={job.total_bytes || Math.max(job.completed_bytes, 100)}
-                  />
-                </div>
-
-                <div className="job-stats">
-                  <span>
-                    {formatBytes(job.completed_bytes)} / {formatBytes(job.total_bytes)}
-                    {percent ? ` (${percent}%)` : ""}
-                  </span>
-                  {job.state === "Active" && (
-                    <span className="speed">⚡ {formatSpeed(job.speed_bytes_per_sec)}</span>
-                  )}
-                  {job.state === "Queued" && (
-                    <span className="queued-indicator">⏳ Waiting in queue</span>
-                  )}
-                </div>
-
-                {refreshingId === job.id && (
-                  <div className="refresh-box">
-                    <input
-                      placeholder="Paste new refreshed download URL..."
-                      value={newUrl}
-                      onChange={(e) => setNewUrl(e.target.value)}
-                    />
-                    <button className="primary-btn" onClick={() => submitRefresh(job.id)}>
-                      Update & Resume
-                    </button>
-                    <button className="action-btn" onClick={() => setRefreshingId(null)}>
-                      Cancel
-                    </button>
-                  </div>
-                )}
-              </article>
-            );
-          })
-        )}
-      </section>
-
-      {/* ZIP Archive Content Preview Modal */}
-      {previewFiles && (
-        <div className="modal-backdrop" onClick={() => setPreviewFiles(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <h2>📦 Archive Inspection: {previewArchiveName}</h2>
-                <span className="modal-sub">
-                  Direct range preview from remote server ({previewFiles.length} files detected)
-                </span>
-              </div>
-              <button className="modal-close-btn" onClick={() => setPreviewFiles(null)}>
-                ✕
-              </button>
-            </div>
-
-            <div className="modal-body">
-              <table className="archive-table">
-                <thead>
-                  <tr>
-                    <th>Filename</th>
-                    <th>Uncompressed</th>
-                    <th>Compressed</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {previewFiles.map((file, idx) => (
-                    <tr key={idx}>
-                      <td className="archive-filename">
-                        {file.is_dir ? "📁 " : "📄 "}
-                        {file.name}
-                      </td>
-                      <td>{formatBytes(file.uncompressed_size)}</td>
-                      <td>{formatBytes(file.compressed_size)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
+  return <div className="app-shell">
+    <aside className="sidebar">
+      <div className="brand"><div className="brand-mark"><Download size={18} /></div><div><strong>Hopper</strong><span>Download manager</span></div></div>
+      <button className="add-button" onClick={() => setShowAdd(true)}><Plus size={17} /> Add URL</button>
+      <nav className="side-nav" aria-label="Download categories">{categories.map(([key, label]) => <button key={key} className={category === key ? "selected" : ""} onClick={() => { setCategory(key); setSelectedId(null); }}><span>{label}</span><b>{counts[key]}</b></button>)}</nav>
+      <div className="sidebar-footer"><Settings size={16} /> <span>Transfer settings</span></div>
+    </aside>
+    <main className="workspace">
+      <header className="title-bar"><div><span className="eyebrow">Library</span><h1>{selected ? "Download details" : categories.find(([key]) => key === category)?.[1]}</h1></div>{!selected && <div className="header-settings"><label>Speed <select value={speedLimit} onChange={(e) => { const value = Number(e.target.value); setSpeedLimitState(value); setSpeedLimit(value).catch((err) => setError(String(err))); }}><option value={0}>Unlimited</option><option value={1048576}>1 MB/s</option><option value={5242880}>5 MB/s</option><option value={10485760}>10 MB/s</option></select></label><label>Active <select value={maxConcurrent} onChange={(e) => { const value = Number(e.target.value); setMaxConcurrentState(value); setMaxConcurrent(value).catch((err) => setError(String(err))); }}><option value={1}>1</option><option value={3}>3</option><option value={5}>5</option></select></label></div>}</header>
+      {error && <div className="error-notice" role="alert">{error}<button onClick={() => setError(null)}>Dismiss</button></div>}
+      {selected ? <DownloadDetails job={selected} pendingAction={pendingActions.has(selected.id)} onBack={() => setSelectedId(null)} onAction={(command) => action(command, selected.id)} /> : <><div className="toolbar"><div className="search"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search downloads" aria-label="Search downloads" /></div><span className="result-count">{visibleJobs.length} items</span></div><section className="download-list">{visibleJobs.length === 0 ? <div className="empty-state"><Download size={30} /><h2>{query ? "No matching downloads" : "No downloads yet"}</h2><p>{query ? "Try a different search." : "Add a URL to start your first transfer."}</p><button className="secondary-button" onClick={() => setShowAdd(true)}>Add URL</button></div> : visibleJobs.map((job) => <DownloadRow key={job.id} job={job} pendingAction={pendingActions.has(job.id)} onSelect={() => setSelectedId(job.id)} onAction={(command) => action(command, job.id)} onPreview={job.destination.toLowerCase().endsWith(".zip") ? () => previewArchive(job) : undefined} />)}</section></>}
     </main>
-  );
+    {showAdd && <div className="modal-backdrop" onClick={() => setShowAdd(false)}><div className="dialog" onClick={(e) => e.stopPropagation()}><h2>Add download</h2><p>Paste a direct HTTP or HTTPS URL.</p><input autoFocus value={newUrl} onChange={(e) => setNewUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} placeholder="https://example.com/file.zip" /><div className="dialog-actions"><button className="secondary-button" onClick={() => setShowAdd(false)}>Cancel</button><button className="primary-button" onClick={add}>Start download</button></div></div></div>}
+    {preview && <div className="modal-backdrop" onClick={() => setPreview(null)}><div className="dialog archive-dialog" onClick={(e) => e.stopPropagation()}><h2>{preview.name}</h2><p>{preview.files.length} entries detected</p><div className="archive-list">{preview.files.map((file) => <div key={file.name}><span>{file.is_dir ? "Folder" : file.name}</span><span>{formatBytes(file.uncompressed_size)}</span></div>)}</div><button className="secondary-button" onClick={() => setPreview(null)}>Close</button></div></div>}
+  </div>;
 }
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>
-);
+createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);

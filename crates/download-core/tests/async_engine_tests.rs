@@ -35,17 +35,116 @@ async fn async_engine_downloads_and_publishes_completion() {
 
     // Wait for the Completed event (timeout after 5 s to avoid hanging CI).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
+    let completion = loop {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         let event = tokio::time::timeout(remaining, rx.recv()).await
             .expect("timed out waiting for download to complete")
             .expect("event channel closed");
         if event.job_id == id && event.state == JobState::Completed {
+            break event;
+        }
+    };
+
+    assert_eq!(completion.completed_bytes, 4);
+    assert_eq!(completion.total_bytes, Some(4));
+    assert_eq!(
+        engine.list_jobs().await.unwrap()[0].completed_bytes,
+        completion.completed_bytes
+    );
+    assert_eq!(std::fs::read(root.path().join("file.bin")).unwrap(), b"data");
+}
+
+#[tokio::test]
+async fn body_read_failure_does_not_finalize_partial_file() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 512];
+        let _ = stream.read(&mut request);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
+            .unwrap();
+    });
+
+    let root = tempdir().unwrap();
+    let engine = download_core::engine::Engine::new(root.path().to_path_buf()).unwrap();
+    let mut rx = engine.subscribe_events().unwrap();
+    let id = engine
+        .create_job(JobSpec {
+            source: Url::parse(&format!("http://{address}/broken")).unwrap(),
+            destination: "broken.bin".into(),
+            request_context: RequestContext::default(),
+            conflict_policy: ConflictPolicy::Reject,
+        })
+        .await
+        .unwrap();
+
+    engine.start_job(id.clone()).await.unwrap();
+    let mut final_state = None;
+    for _ in 0..10 {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if event.job_id == id && matches!(event.state, JobState::Failed | JobState::Completed) {
+            final_state = Some(event.state);
             break;
         }
     }
 
-    assert_eq!(std::fs::read(root.path().join("file.bin")).unwrap(), b"data");
+    assert_eq!(final_state, Some(JobState::Failed));
+    assert!(!root.path().join("broken.bin").exists());
+}
+
+#[tokio::test]
+async fn stalled_response_times_out_and_releases_active_slot() {
+    use std::io::Read;
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 512];
+        let _ = stream.read(&mut request);
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    });
+
+    let root = tempdir().unwrap();
+    let engine = download_core::engine::Engine::with_timeouts(
+        root.path().to_path_buf(),
+        std::time::Duration::from_millis(100),
+    )
+    .unwrap();
+    let mut rx = engine.subscribe_events().unwrap();
+    let id = engine
+        .create_job(JobSpec {
+            source: Url::parse(&format!("http://{address}/stalled")).unwrap(),
+            destination: "stalled.bin".into(),
+            request_context: RequestContext::default(),
+            conflict_policy: ConflictPolicy::Reject,
+        })
+        .await
+        .unwrap();
+
+    engine.start_job(id.clone()).await.unwrap();
+    let mut saw_failure = false;
+    for _ in 0..10 {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if event.job_id == id && event.state == JobState::Failed {
+            saw_failure = true;
+            break;
+        }
+    }
+    assert!(saw_failure);
+    assert_eq!(engine.list_jobs().await.unwrap()[0].state, JobState::Failed);
 }
 
 

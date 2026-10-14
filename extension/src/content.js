@@ -262,12 +262,11 @@
             if (data && data.streamingData) {
               const title = (data.videoDetails && data.videoDetails.title) || cleanPageTitle();
               const cleanTitle = title.replace(/[\/\\:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim();
-              const allFormats = [
-                ...(data.streamingData.formats || []),
-                ...(data.streamingData.adaptiveFormats || [])
-              ];
+              // Adaptive video-only/audio-only tracks are not complete files.
+              // Until muxing exists, expose only progressive formats.
+              const allFormats = data.streamingData.formats || [];
               for (const f of allFormats) {
-                if (f.url) {
+                if (f.url && (f.mimeType || '').startsWith('video/')) {
                   const isAudio = (f.mimeType || '').startsWith('audio/');
                   const ext = isAudio ? '.mp3' : '.mp4';
                   const quality = f.qualityLabel || (isAudio ? 'Audio' : `${f.height || 360}p`);

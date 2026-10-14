@@ -31,6 +31,17 @@
     } catch {
       return false;
     }
+
+  }
+
+  function isSupportedYouTubeFormat(format) {
+    return Boolean(
+      format &&
+      format.url &&
+      format.hasAudio === true &&
+      typeof format.mimeType === 'string' &&
+      format.mimeType.startsWith('video/')
+    );
   }
 
   function redactUrl(value) {
@@ -359,6 +370,7 @@
 
   const protocolExports = {
     validateHandoff,
+    isSupportedYouTubeFormat,
     redactUrl,
     getUrlExtension,
     classifyMedia,

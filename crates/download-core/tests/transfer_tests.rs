@@ -31,6 +31,7 @@ fn downloads_a_file_and_finalizes_it() {
     let root = tempdir().unwrap();
     let engine = TransferEngine::new(EngineConfig {
         destination_root: root.path().to_path_buf(),
+        inactivity_timeout: std::time::Duration::from_secs(30),
     })
     .unwrap();
     let id = engine
@@ -53,6 +54,7 @@ fn rename_policy_does_not_overwrite_existing_file() {
     std::fs::write(root.path().join("file.bin"), b"existing").unwrap();
     let engine = TransferEngine::new(EngineConfig {
         destination_root: root.path().to_path_buf(),
+        inactivity_timeout: std::time::Duration::from_secs(30),
     })
     .unwrap();
     let id = engine

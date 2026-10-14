@@ -20,6 +20,7 @@ const {
 } = protocol;
 
 const HOST_NAME = 'org.open_download_manager.host';
+const YOUTUBE_PROGRESSIVE_ITAGS = new Set(['18', '22']);
 const seen = new Set();
 const tabMedia = new Map();
 const tabTitles = new Map();
@@ -81,6 +82,11 @@ async function sendNativeCommand(commandObj) {
   });
 }
 
+function sanitizeNativeError(error) {
+  const message = String(error || 'Native command failed');
+  return message.replace(/https?:\/\/[^\s)]+/gi, '[redacted URL]');
+}
+
 async function executeHandoff(sourceUrl, destinationName) {
   if (!validateHandoff({ url: sourceUrl })) {
     return { ok: false, error: 'Invalid URL scheme' };
@@ -98,7 +104,14 @@ async function executeHandoff(sourceUrl, destinationName) {
   if (createResp && createResp.ok && createResp.payload && createResp.payload.job_id) {
     const jobId = createResp.payload.job_id;
     const startCmd = formatNativeCommand('Start', { job_id: jobId });
-    await sendNativeCommand(startCmd);
+    const startResp = await sendNativeCommand(startCmd);
+    if (!startResp || startResp.ok !== true) {
+      return {
+        ok: false,
+        error: sanitizeNativeError(startResp && startResp.error) || 'Native download start failed',
+        job_id: jobId,
+      };
+    }
     return { ok: true, job_id: jobId, method: 'native' };
   }
 
@@ -213,15 +226,15 @@ if (typeof chrome !== 'undefined' && chrome.webRequest && chrome.webRequest.onHe
             parsed.searchParams.delete('range');
             const cleanUrl = parsed.toString();
             const itag = parsed.searchParams.get('itag') || '';
+            // Only expose known progressive YouTube formats. Adaptive
+            // video-only/audio-only tracks require muxing, which is not
+            // implemented by the native downloader.
+            if (!YOUTUBE_PROGRESSIVE_ITAGS.has(itag)) {
+              return;
+            }
             const itagMap = {
               '18': '360p',
               '22': '720p HD',
-              '137': '1080p Full HD',
-              '136': '720p',
-              '135': '480p',
-              '134': '360p',
-              '140': 'Audio (M4A)',
-              '251': 'Audio (Opus)',
             };
             const quality = itagMap[itag] || (type === 'audio' ? 'Audio' : 'Video');
             const isAudio = quality.startsWith('Audio') || type === 'audio';
