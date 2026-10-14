@@ -18,7 +18,8 @@ echo Creating Chrome Native Messaging Host Manifest...
   echo   "path": "%ESCAPED_EXE%",
   echo   "type": "stdio",
   echo   "allowed_origins": [
-  echo     "chrome-extension://gaokhlidbpdojkakefeehfpknnnlgkel/"
+  echo     "chrome-extension://gaokhlidbpdojkakefeehfpknnnlgkel/",
+  echo     "chrome-extension://diofdkbmliadkdmlholappfnipkhgmin/"
   echo   ]
   echo }
 ) > "%MANIFEST_PATH%"

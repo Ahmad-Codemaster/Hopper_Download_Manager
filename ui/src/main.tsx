@@ -56,7 +56,7 @@ function App() {
     onProgress((event) => {
       setJobs((currentJobs) =>
         currentJobs.map((job) => {
-          if (job.id[0] === event.job_id[0]) {
+          if (job.id === event.job_id) {
             return {
               ...job,
               state: event.state,
@@ -86,7 +86,7 @@ function App() {
       setJobs((current) => [
         ...current,
         {
-          id: { 0: id },
+          id,
           source: parsed.toString(),
           destination: filename,
           state: "Active",
@@ -251,7 +251,7 @@ function App() {
             const isZip = job.destination.toLowerCase().endsWith(".zip");
 
             return (
-              <article key={job.id[0]} className={`job-card ${job.state.toLowerCase()}`}>
+              <article key={job.id} className={`job-card ${job.state.toLowerCase()}`}>
                 <div className="job-header">
                   <div>
                     <strong className="filename">{job.destination}</strong>
@@ -270,7 +270,7 @@ function App() {
                     {job.state === "Active" && (
                       <button
                         className="action-btn"
-                        onClick={() => handleAction("pause_job", job.id[0])}
+                        onClick={() => handleAction("pause_job", job.id)}
                       >
                         ⏸ Pause
                       </button>
@@ -278,7 +278,7 @@ function App() {
                     {job.state === "Paused" && (
                       <button
                         className="action-btn play"
-                        onClick={() => handleAction("resume_job", job.id[0])}
+                        onClick={() => handleAction("resume_job", job.id)}
                       >
                         ▶ Resume
                       </button>
@@ -287,14 +287,14 @@ function App() {
                       <>
                         <button
                           className="action-btn play"
-                          onClick={() => handleAction("retry_job", job.id[0])}
+                          onClick={() => handleAction("retry_job", job.id)}
                         >
                           🔄 Retry
                         </button>
                         <button
                           className="action-btn warning"
                           onClick={() => {
-                            setRefreshingId(job.id[0]);
+                            setRefreshingId(job.id);
                             setNewUrl("");
                           }}
                         >
@@ -305,7 +305,7 @@ function App() {
                     {(job.state === "Active" || job.state === "Paused" || job.state === "Queued") && (
                       <button
                         className="action-btn danger"
-                        onClick={() => handleAction("cancel_job", job.id[0])}
+                        onClick={() => handleAction("cancel_job", job.id)}
                       >
                         ✕ Cancel
                       </button>
@@ -333,14 +333,14 @@ function App() {
                   )}
                 </div>
 
-                {refreshingId === job.id[0] && (
+                {refreshingId === job.id && (
                   <div className="refresh-box">
                     <input
                       placeholder="Paste new refreshed download URL..."
                       value={newUrl}
                       onChange={(e) => setNewUrl(e.target.value)}
                     />
-                    <button className="primary-btn" onClick={() => submitRefresh(job.id[0])}>
+                    <button className="primary-btn" onClick={() => submitRefresh(job.id)}>
                       Update & Resume
                     </button>
                     <button className="action-btn" onClick={() => setRefreshingId(null)}>

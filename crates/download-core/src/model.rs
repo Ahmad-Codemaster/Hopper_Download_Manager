@@ -81,6 +81,11 @@ pub struct Segment {
     pub start: u64,
     pub end: u64,
     pub completed: u64,
+    /// Transient in-memory flag — not persisted to SQLite.
+    /// Set to `true` by the first worker that claims this segment so no other
+    /// worker in the same session will pick it up (HIGH-02 fix).
+    #[serde(skip, default)]
+    pub claimed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

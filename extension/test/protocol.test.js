@@ -5,6 +5,7 @@ const {
   redactUrl,
   isMediaUrl,
   isDownloadableUrl,
+  classifyMedia,
   extractFilename,
   parseM3u8Variants,
   formatNativeCommand,
@@ -129,3 +130,63 @@ test('formats valid native commands for download-host', () => {
   });
 });
 
+// ── MED-01 regression tests ──────────────────────────────────────────────────
+
+test('MED-01: .txt files are excluded from downloadable classification (f.txt fix)', () => {
+  // Google's f.txt tracking beacon (133 bytes, served with content-disposition: attachment)
+  // must NOT be classified as a downloadable item.
+  assert.equal(
+    isDownloadableUrl(
+      'https://www.google.com/gen_204?f.txt',
+      'attachment; filename="f.txt"',
+      'text/plain',
+      133
+    ),
+    false,
+    '.txt attachment must be filtered by IGNORED_EXTENSIONS'
+  );
+  assert.equal(
+    isDownloadableUrl('https://example.com/readme.txt', '', 'text/plain'),
+    false
+  );
+});
+
+test('MED-01: small audio files (< 256 KB) are excluded as media (UI sound effects fix)', () => {
+  // YouTube loads failure.mp3 (~6 KB) and open.mp3 (~6 KB) as UI sound effects.
+  // These must be filtered out by the minimum audio size check.
+  assert.equal(
+    isMediaUrl('https://www.youtube.com/s/desktop/sounds/failure.mp3', 'audio/mpeg', 6 * 1024),
+    false,
+    'failure.mp3 at 6 KB must not be classified as media'
+  );
+  assert.equal(
+    isMediaUrl('https://cdn.example.com/ui/open.mp3', 'audio/mpeg', 8 * 1024),
+    false,
+    'open.mp3 at 8 KB must not be classified as media'
+  );
+});
+
+test('MED-01: large audio files (>= 256 KB) still classified as media', () => {
+  // A genuine podcast or music track must still pass through.
+  assert.equal(
+    isMediaUrl('https://cdn.example.com/podcast_episode.mp3', 'audio/mpeg', 10 * 1024 * 1024),
+    true,
+    '10 MB mp3 must still be classified as media'
+  );
+  // When content-length is unknown (0 / not provided), default to allowing it.
+  assert.equal(
+    isMediaUrl('https://cdn.example.com/track.mp3', 'audio/mpeg', 0),
+    true,
+    'mp3 without content-length must not be blocked'
+  );
+});
+
+test('CRIT-03: identifies YouTube videoplayback stream chunks as media', () => {
+  const ytVideoUrl = 'https://rr1---sn-4g5ednks.googlevideo.com/videoplayback?expire=1728938400&ei=xyz&ip=1.2.3.4&id=o-ABC&itag=22&source=youtube&requiressl=yes&mime=video%2Fmp4&range=0-1048575';
+  assert.equal(isMediaUrl(ytVideoUrl, 'video/mp4', 1048576), true);
+  assert.equal(classifyMedia(ytVideoUrl, 'video/mp4'), 'video');
+
+  const ytAudioUrl = 'https://rr2---sn-4g5ednks.googlevideo.com/videoplayback?expire=1728938400&id=o-ABC&itag=140&source=youtube&mime=audio%2Fmp4&range=0-524288';
+  assert.equal(isMediaUrl(ytAudioUrl, 'audio/mp4', 524288), true);
+  assert.equal(classifyMedia(ytAudioUrl, 'audio/mp4'), 'audio');
+});

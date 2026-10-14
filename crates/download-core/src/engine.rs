@@ -65,9 +65,15 @@ impl Engine {
 
     pub async fn start_job(&self, id: JobId) -> Result<(), EngineError> {
         let engine = self.get_or_init()?;
-        let res = engine.start_job_async(id).await;
-        let _ = self.start_next_queued().await;
-        res
+        // CRIT-01 fix: spawn the transfer as a background task so we return
+        // immediately, releasing the Tauri engine mutex before any network I/O.
+        // start_job_async itself handles the Queued early-exit when at capacity.
+        let self_clone = self.clone();
+        tokio::spawn(async move {
+            let _ = engine.start_job_async(id).await;
+            let _ = self_clone.start_next_queued().await;
+        });
+        Ok(())
     }
 
     pub async fn list_jobs(&self) -> Result<Vec<crate::store::StoredJob>, EngineError> {
@@ -327,6 +333,12 @@ impl TransferEngine {
             .map_err(|e| EngineError::InvalidJob(e.to_string()))?;
 
         if !initial_response.status().is_success() {
+            // CRIT-02 fix: remove the active slot BEFORE returning so it is not
+            // permanently leaked when the server returns 4xx/5xx.
+            let _ = self
+                .active_cancellations
+                .lock()
+                .map(|mut g| g.remove(&id));
             let _ = self.store.set_state(id.clone(), JobState::Failed);
             self.emit_event(JobEvent {
                 job_id: id.clone(),
@@ -531,20 +543,26 @@ impl TransferEngine {
                         break;
                     }
 
-                    // 1. Find next uncompleted segment or split largest using IDM in-half division rule
+                    // 1. Find next unclaimed+uncompleted segment, or split the largest.
+                    // HIGH-02 fix: check `claimed` flag so multiple workers cannot race
+                    // on the same segment and corrupt the output file.
                     let (seg_idx, current_start, end) = {
                         let mut segs = segments.lock().unwrap();
                         let found = segs.iter().enumerate().find_map(|(i, s)| {
                             let remaining = (s.end + 1).saturating_sub(s.start + s.completed);
-                            if remaining > 0 && s.completed == 0 {
-                                Some((i, s.start, s.end))
+                            if remaining > 0 && !s.claimed {
+                                Some((i, s.start + s.completed, s.end))
                             } else {
                                 None
                             }
                         });
 
                         match found {
-                            Some(val) => val,
+                            Some((idx, start, end)) => {
+                                // Claim the segment before releasing the lock.
+                                segs[idx].claimed = true;
+                                (idx, start, end)
+                            }
                             None => {
                                 if let Some(new_seg) =
                                     crate::transfer::try_split_largest_segment(&mut segs, 256 * 1024)
@@ -552,7 +570,10 @@ impl TransferEngine {
                                     let new_idx = segs.len();
                                     let start = new_seg.start;
                                     let end = new_seg.end;
-                                    segs.push(new_seg);
+                                    // New segment is implicitly claimed by this worker.
+                                    let mut claimed_seg = new_seg;
+                                    claimed_seg.claimed = true;
+                                    segs.push(claimed_seg);
                                     (new_idx, start, end)
                                 } else {
                                     break;
@@ -564,7 +585,13 @@ impl TransferEngine {
                     let range_header = format!("bytes={current_start}-{end}");
                     let mut resp = match client.get(&source).header("Range", range_header).send().await {
                         Ok(r) if r.status().is_success() => r,
-                        _ => break,
+                        _ => {
+                            let mut segs = segments.lock().unwrap();
+                            if let Some(seg) = segs.get_mut(seg_idx) {
+                                seg.claimed = false;
+                            }
+                            break;
+                        }
                     };
 
                     let mut current_offset = current_start;
@@ -575,22 +602,52 @@ impl TransferEngine {
                             success = false;
                             break;
                         }
-                        let chunk_len = chunk.len() as u64;
-                        limiter.consume(chunk_len).await;
-                        if crate::transfer::write_at(&file, &chunk, current_offset).is_err() {
-                            success = false;
+
+                        // Check current bounds in case segment was dynamically split in half
+                        let target_end = {
+                            let segs = segments.lock().unwrap();
+                            segs.get(seg_idx).map(|s| s.end).unwrap_or(end)
+                        };
+
+                        if current_offset > target_end {
                             break;
                         }
-                        current_offset += chunk_len;
-                        total_completed.fetch_add(chunk_len, Ordering::Relaxed);
 
-                        let mut segs = segments.lock().unwrap();
-                        if let Some(seg) = segs.get_mut(seg_idx) {
-                            seg.completed += chunk_len;
+                        let chunk_len = chunk.len() as u64;
+                        let write_len = if current_offset + chunk_len > target_end + 1 {
+                            (target_end + 1 - current_offset) as usize
+                        } else {
+                            chunk_len as usize
+                        };
+
+                        if write_len > 0 {
+                            limiter.consume(write_len as u64).await;
+                            if crate::transfer::write_at(&file, &chunk[..write_len], current_offset).is_err() {
+                                success = false;
+                                break;
+                            }
+                            current_offset += write_len as u64;
+                            total_completed.fetch_add(write_len as u64, Ordering::Relaxed);
+
+                            let mut segs = segments.lock().unwrap();
+                            if let Some(seg) = segs.get_mut(seg_idx) {
+                                seg.completed += write_len as u64;
+                            }
+                        }
+
+                        if write_len < chunk_len as usize {
+                            // Truncated at dynamic split boundary
+                            break;
                         }
                     }
 
                     if !success || *cancel_rx.borrow() {
+                        let mut segs = segments.lock().unwrap();
+                        if let Some(seg) = segs.get_mut(seg_idx) {
+                            if (seg.end + 1).saturating_sub(seg.start + seg.completed) > 0 {
+                                seg.claimed = false;
+                            }
+                        }
                         break;
                     }
                 }

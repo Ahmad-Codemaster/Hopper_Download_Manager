@@ -15,7 +15,14 @@
     '.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.ico', '.bmp',
     '.woff', '.woff2', '.ttf', '.eot', '.otf',
     '.css', '.js', '.json', '.xml', '.html', '.htm',
+    // Text/data files — Google sends f.txt as a 133-byte tracking attachment;
+    // these should never be captured as media (MED-01 fix).
+    '.txt', '.log', '.csv',
   ]);
+
+  // Minimum size for an audio file to be treated as real media rather than a
+  // small UI sound effect (e.g. YouTube's failure.mp3 / open.mp3 are ~6 KB).
+  const MIN_AUDIO_BYTES = 256 * 1024; // 256 KB
 
   function validateHandoff(message) {
     try {
@@ -48,7 +55,7 @@
     return '';
   }
 
-  function isMediaUrl(url, contentType = '') {
+  function isMediaUrl(url, contentType = '', contentLength = 0) {
     const ext = getUrlExtension(url);
     if (IGNORED_EXTENSIONS.has(ext)) {
       return false;
@@ -60,6 +67,13 @@
     }
 
     if (MEDIA_EXTENSIONS.has(ext)) {
+      // MED-01 fix: For audio-only extensions (mp3, wav, aac, ogg, flac, m4a)
+      // require a minimum verified Content-Length so tiny UI sound effects
+      // (e.g. YouTube's failure.mp3 at ~6 KB) are not classified as media.
+      const AUDIO_ONLY_EXTS = new Set(['.mp3', '.wav', '.aac', '.ogg', '.flac', '.m4a']);
+      if (AUDIO_ONLY_EXTS.has(ext) && typeof contentLength === 'number' && contentLength > 0 && contentLength < MIN_AUDIO_BYTES) {
+        return false;
+      }
       return true;
     }
 

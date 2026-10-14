@@ -200,8 +200,101 @@
     }
   });
 
+  let currentVideoId = '';
+  function getVideoId() {
+    try {
+      const url = new URL(location.href);
+      return url.searchParams.get('v') || (url.pathname.startsWith('/shorts/') ? url.pathname.split('/')[2] : '');
+    } catch {
+      return '';
+    }
+  }
+
+  // Listen for YouTube extractor messages from the page (MAIN world)
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || !event.data || event.data.source !== 'hopper-yt-extractor') {
+      return;
+    }
+
+    const { title, formats } = event.data;
+    if (!Array.isArray(formats) || formats.length === 0) return;
+
+    const vid = getVideoId();
+    if (vid && vid !== currentVideoId) {
+      currentVideoId = vid;
+      capturedMedia.clear();
+    }
+
+    const cleanTitle = (title || cleanPageTitle())
+      .replace(/[\/\\:*?"<>|]/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    formats.forEach((f) => {
+      const isAudio = f.type === 'audio';
+      const ext = isAudio ? '.mp3' : '.mp4';
+      const filename = `${cleanTitle} [${f.quality}]${ext}`;
+
+      const item = {
+        url: f.url,
+        filename,
+        quality: f.quality,
+        type: f.type,
+        size: f.size || 0,
+      };
+
+      addMedia(item);
+      chrome.runtime.sendMessage({ action: 'RECORD_DOM_MEDIA', item }).catch(() => {});
+    });
+  });
+
+  // Fallback: Scan YouTube inline script tags for ytInitialPlayerResponse
+  function scanYouTubeDOM() {
+    if (!location.hostname.includes('youtube.com')) return;
+    try {
+      const scripts = document.querySelectorAll('script');
+      for (const s of scripts) {
+        const text = s.textContent || '';
+        if (text.includes('ytInitialPlayerResponse')) {
+          const match = text.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});/);
+          if (match && match[1]) {
+            const data = JSON.parse(match[1]);
+            if (data && data.streamingData) {
+              const title = (data.videoDetails && data.videoDetails.title) || cleanPageTitle();
+              const cleanTitle = title.replace(/[\/\\:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim();
+              const allFormats = [
+                ...(data.streamingData.formats || []),
+                ...(data.streamingData.adaptiveFormats || [])
+              ];
+              for (const f of allFormats) {
+                if (f.url) {
+                  const isAudio = (f.mimeType || '').startsWith('audio/');
+                  const ext = isAudio ? '.mp3' : '.mp4';
+                  const quality = f.qualityLabel || (isAudio ? 'Audio' : `${f.height || 360}p`);
+                  const item = {
+                    url: f.url,
+                    filename: `${cleanTitle} [${quality}]${ext}`,
+                    quality,
+                    type: isAudio ? 'audio' : 'video',
+                    size: f.contentLength ? parseInt(f.contentLength, 10) : 0,
+                  };
+                  addMedia(item);
+                  chrome.runtime.sendMessage({ action: 'RECORD_DOM_MEDIA', item }).catch(() => {});
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   // 3. Scan DOM for HTML5 <video> and <audio> elements
   function scanDOMMedia() {
+    scanYouTubeDOM();
+
     const videoAudioElements = document.querySelectorAll('video, audio');
     videoAudioElements.forEach((el) => {
       let src = el.currentSrc || el.src;
@@ -245,6 +338,18 @@
         }
       });
     });
+  }
+
+  // Inject youtube-inject.js as fallback if on YouTube
+  if (location.hostname.includes('youtube.com')) {
+    try {
+      const s = document.createElement('script');
+      s.src = chrome.runtime.getURL('src/youtube-inject.js');
+      s.onload = () => s.remove();
+      (document.head || document.documentElement).appendChild(s);
+    } catch {
+      // ignore
+    }
   }
 
   // Initial scan + mutation observer for modern single-page apps (like YouTube/Netflix)

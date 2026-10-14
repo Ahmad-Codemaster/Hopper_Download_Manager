@@ -194,7 +194,7 @@ if (typeof chrome !== 'undefined' && chrome.webRequest && chrome.webRequest.onHe
       const contentLength = getHeader(details.responseHeaders, 'content-length');
       const size = contentLength ? parseInt(contentLength, 10) : 0;
 
-      const isMedia = isMediaUrl(details.url, contentType);
+      const isMedia = isMediaUrl(details.url, contentType, size);
       const isDownload = isDownloadableUrl(details.url, contentDisposition, contentType, size);
 
       if (isMedia || isDownload) {
@@ -204,6 +204,45 @@ if (typeof chrome !== 'undefined' && chrome.webRequest && chrome.webRequest.onHe
         if (type === 'hls-stream') {
           await parseAndRecordHlsStream(details.tabId, details.url, pageTitle);
           return;
+        }
+
+        if (details.url.includes('googlevideo.com/videoplayback')) {
+          try {
+            const parsed = new URL(details.url);
+            // Crucial: remove range parameter so URL requests full stream instead of a 1MB chunk
+            parsed.searchParams.delete('range');
+            const cleanUrl = parsed.toString();
+            const itag = parsed.searchParams.get('itag') || '';
+            const itagMap = {
+              '18': '360p',
+              '22': '720p HD',
+              '137': '1080p Full HD',
+              '136': '720p',
+              '135': '480p',
+              '134': '360p',
+              '140': 'Audio (M4A)',
+              '251': 'Audio (Opus)',
+            };
+            const quality = itagMap[itag] || (type === 'audio' ? 'Audio' : 'Video');
+            const isAudio = quality.startsWith('Audio') || type === 'audio';
+            const ext = isAudio ? '.mp3' : '.mp4';
+            const cleanTitle = (sanitizeTitle && sanitizeTitle(pageTitle)) || pageTitle || 'YouTube Video';
+            const filename = `${cleanTitle} [${quality}]${ext}`;
+
+            recordMediaItem(details.tabId, {
+              id: `${details.tabId}-yt-${itag || Date.now()}`,
+              url: cleanUrl,
+              filename,
+              quality,
+              contentType,
+              type: isAudio ? 'audio' : 'video',
+              size,
+              timestamp: Date.now(),
+            });
+            return;
+          } catch {
+            // fallback
+          }
         }
 
         const filename = extractFilename(details.url, contentDisposition, 'download.bin', pageTitle, type);

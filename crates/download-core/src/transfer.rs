@@ -113,6 +113,7 @@ pub fn create_initial_segments(total_bytes: u64, max_connections: usize) -> Vec<
             start,
             end,
             completed: 0,
+            claimed: false,
         });
         start = end + 1;
     }
@@ -144,6 +145,7 @@ pub fn try_split_largest_segment(segments: &mut [Segment], min_split_bytes: u64)
             start: mid + 1,
             end: old_end,
             completed: 0,
+            claimed: false,
         })
     } else {
         None
@@ -181,8 +183,8 @@ mod tests {
     #[test]
     fn test_dynamic_in_half_splitting() {
         let mut segments = vec![
-            Segment { start: 0, end: 999, completed: 500 }, // 499 remaining
-            Segment { start: 1000, end: 2999, completed: 0 }, // 2000 remaining (largest)
+            Segment { start: 0, end: 999, completed: 500, claimed: false }, // 499 remaining
+            Segment { start: 1000, end: 2999, completed: 0, claimed: false }, // 2000 remaining (largest)
         ];
 
         let new_seg = try_split_largest_segment(&mut segments, 1000).expect("should split largest");
@@ -201,5 +203,26 @@ mod tests {
         assert_eq!(segs.len(), 4);
         assert_eq!(segs[0].start, 0);
         assert_eq!(segs[3].end, 9_999_999);
+    }
+
+    #[test]
+    fn test_dynamic_in_half_splitting_partially_completed() {
+        let mut segments = vec![
+            Segment { start: 0, end: 1999, completed: 1000, claimed: true }, // remaining is 1000 (1000..1999)
+        ];
+
+        let new_seg = try_split_largest_segment(&mut segments, 500).expect("should split remaining");
+        // Remaining was 1000. Half is 500.
+        // Current pos is 0 + 1000 = 1000.
+        // Mid is 1000 + 500 - 1 = 1499.
+        // seg[0].end is shortened to 1499.
+        assert_eq!(segments[0].start, 0);
+        assert_eq!(segments[0].end, 1499);
+        assert_eq!(segments[0].completed, 1000);
+        // New segment is 1500..1999 (len 500).
+        assert_eq!(new_seg.start, 1500);
+        assert_eq!(new_seg.end, 1999);
+        assert_eq!(new_seg.completed, 0);
+        assert_eq!(new_seg.claimed, false);
     }
 }

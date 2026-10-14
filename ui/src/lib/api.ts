@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type Job = {
-  id: { 0: string };
+  id: string;
   source: string;
   destination: string;
   state: "Queued" | "Active" | "Paused" | "Failed" | "Completed" | "Canceled";
@@ -12,7 +12,7 @@ export type Job = {
 };
 
 export type JobEvent = {
-  job_id: { 0: string };
+  job_id: string;
   state: "Queued" | "Active" | "Paused" | "Failed" | "Completed" | "Canceled";
   completed_bytes: number;
   total_bytes: number | null;

@@ -4,6 +4,7 @@
   "path": "C:\\Users\\ahmad\\AndroidStudioProjects\\IDM_project\\target\\release\\download-host.exe",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://gaokhlidbpdojkakefeehfpknnnlgkel/"
+    "chrome-extension://gaokhlidbpdojkakefeehfpknnnlgkel/",
+    "chrome-extension://diofdkbmliadkdmlholappfnipkhgmin/"
   ]
 }

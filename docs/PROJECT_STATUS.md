@@ -67,15 +67,23 @@ The project currently contains:
 - **Resilient Fallback Mechanism:**
   - Automatically falls back to `chrome.downloads.download` if the native host is ever unavailable, guaranteeing downloads never fail with unhandled errors.
 
-### 2.5 Verification & Automated Test Status
+### 2.5 Bug Fixes & Codebase Stabilization (October 2026)
 
-All workspace checks and unit tests are passing:
+- **CRIT-01 (Non-Blocking IPC & Detached Transfers):** Refactored `Engine::start_job` to spawn the download task into Tokio background tasks and return immediately. The Tauri `state.engine` mutex is held only briefly for task submission instead of holding the lock across the entire multi-minute file transfer, ensuring `list_jobs`, `pause_job`, and UI IPC calls remain fully responsive during active downloads.
+- **CRIT-02 (Active Cancellation Slot Cleanup):** Guarded early error returns (e.g. HTTP 4xx/5xx or network drops) so that `active_cancellations` slots are guaranteed to be freed. Eliminates queue stalling where 3 failed requests permanently exhausted `max_concurrent_jobs` and permanently stuck all subsequent jobs in `Queued`.
+- **HIGH-01 (Frontend Job ID Contract Alignment):** Corrected `api.ts` types to plain `string` matching Rust Serde's JSON string output for `JobId`. Removed all string indexing (`job.id[0]` / `event.job_id[0]`), enabling progress bars, action buttons, and live download speed to match backend events.
+- **HIGH-02 (Multi-Segment Worker Claiming & Overlap Prevention):** Introduced an in-memory `claimed` flag on `Segment` and boundary checks in `download_multisegment`. Workers now claim distinct uncompleted segments (supporting resume from `s.start + s.completed`) and automatically truncate active chunk streams if dynamic in-half splitting divides the segment, preventing duplicate downloads and file corruption.
+- **MED-01 (Media Sniffing & Extension Filtering Hardening):** Added `.txt`, `.log`, and `.csv` to `IGNORED_EXTENSIONS` to eliminate Google tracking beacon grabs (`f.txt`). Added a 256 KB minimum file size threshold for audio files to suppress UI sound effects (`failure.mp3`, `open.mp3`). Embedded a deterministic RSA public key in `extension/manifest.json` with matching `allowed_origins` in `org.open_download_manager.host.json`.
+
+### 2.6 Verification & Automated Test Status
+
+All workspace checks and unit tests are passing at 100%:
 
 ```text
 ==================================================
-Rust Cargo Tests: 27 / 27 PASS (0 failed)
-- download-core unit tests: 10 passed
-- async_engine_tests: 5 passed
+Rust Cargo Tests: 28 / 28 PASS (0 failed)
+- download-core unit tests: 11 passed
+- async_engine_tests: 7 passed (incl. CRIT-01 & CRIT-02 regression tests)
 - range_tests: 2 passed
 - recovery_tests: 2 passed
 - store_tests: 1 passed
@@ -84,13 +92,16 @@ Rust Cargo Tests: 27 / 27 PASS (0 failed)
 - ipc_tests: 3 passed
 - native_messaging_tests: 2 passed
 
-Extension Tests: 9 / 9 PASS (0 failed)
+Extension Tests: 12 / 12 PASS (0 failed)
 - validateHandoff & redaction
 - isMediaUrl & isDownloadableUrl
 - Asset & octet-stream noise filtering
 - Filename extraction & hash replacement with page title
 - HLS m3u8 playlist variant parsing
 - Native IPC command formatting
+- MED-01: .txt exclusion (f.txt fix)
+- MED-01: small audio exclusion (< 256 KB UI sounds fix)
+- MED-01: large audio passthrough (>= 256 KB)
 ==================================================
 ```
 

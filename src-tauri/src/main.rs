@@ -36,7 +36,9 @@ async fn create_job(source: String, destination: String, state: tauri::State<'_,
 
 #[tauri::command]
 async fn start_job(job_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.engine.lock().await.start_job(JobId(job_id)).await.map_err(|error| error.to_string())
+    // Engine::start_job spawns the transfer as a background task (CRIT-01 fix)
+    // and returns immediately, so the mutex is held only briefly here.
+    state.engine.lock().await.start_job(JobId(job_id)).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

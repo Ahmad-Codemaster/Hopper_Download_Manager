@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Hopper Download Manager",
   "version": "0.2.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsXhR6+x0MUGFuyHR4RKKHJUYNPa5/96a8Wdl7wonvyqQKUwEeN0hdsIbH4ICAtkYmg2LsiMOMIHF5V+tKT11S5EtTrc3g/8SOkMAyRvwkV4IkNapHGQztikaaUHJ12ffoUirpFNBDR/hZs8fn5NBQS/OUs/UfyhTto0f8aUMvMA07pKPwrUs6FPLl4NszMM6NrebbSna5umWXOVJYKdQRqeAohTP9S0YVPQJCcgVDIeXBeK5a/J9Z+pbx7vOfX5R+9txL9BG6pvIRN8NgRR/GUZiQ8sMHbHeyExSe13ObZwYf8prcMvZYn5BR58HaR9OF1//ECJvh+Q3mCM6o2pBCwIDAQAB",
   "description": "Lightning-fast multi-threaded downloads, media sniffer grabber, and native manager handoff.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -25,10 +26,22 @@
   },
   "content_scripts": [
     {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["src/youtube-inject.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
       "matches": ["<all_urls>"],
       "js": ["src/content.js"],
       "css": ["src/content.css"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["src/youtube-inject.js"],
+      "matches": ["*://*.youtube.com/*"]
     }
   ],
   "action": {

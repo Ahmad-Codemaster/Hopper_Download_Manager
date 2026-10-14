@@ -277,6 +277,7 @@ impl JobStore {
                     start: start as u64,
                     end: end as u64,
                     completed: completed as u64,
+                    claimed: false,
                 })
             })
             .map_err(|e| EngineError::InvalidJob(e.to_string()))?;
